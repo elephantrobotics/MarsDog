@@ -1,0 +1,16 @@
+[project]
+name = "20270707-marsdog2d"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "arcade>=3.3.3",
+]
+
+[project.scripts]
+marsdog-sim2d = "marsdog_sim2d.arcade_viewer_node:main"
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
