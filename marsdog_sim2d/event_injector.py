@@ -15,6 +15,25 @@ MANUAL_INJECTION_TOPIC = "manual_event_injector"
 MANUAL_SOURCE = "marsdog_sim2d"
 INJECTOR_GROUPS = ("Audio", "Need", "Emotion", "Vision", "Result", "Personality")
 DEFAULT_INJECTOR_GROUP = "Audio"
+_VOICE_EVENT_BY_COMMAND_ID = {
+    "CMD_SIT": "EVT_VOICE_COMMAND_SIT",
+    "CMD_COME_HERE": "EVT_VOICE_COMMAND_COME",
+    "CMD_HAND": "EVT_VOICE_COMMAND_GIVE_PAW",
+    "CMD_GIVE_PAW": "EVT_VOICE_COMMAND_GIVE_PAW",
+    "CMD_FOLLOW": "EVT_VOICE_COMMAND_FOLLOW",
+    "CMD_STOP": "EVT_VOICE_COMMAND_STOP",
+    "CMD_LIE_DOWN": "EVT_VOICE_COMMAND_LIE_DOWN",
+    "CMD_STAND_UP": "EVT_VOICE_COMMAND_STAND",
+    "CMD_WAIT": "EVT_VOICE_COMMAND_WAIT",
+    "CMD_HIGH_FIVE": "EVT_VOICE_COMMAND_HIGH_FIVE",
+    "CMD_ROLL_OVER": "EVT_VOICE_COMMAND_ROLL",
+    "CMD_SPIN": "EVT_VOICE_COMMAND_SPIN",
+    "CMD_RETURN_TO_OWNER": "EVT_VOICE_COMMAND_RETURN",
+    "CMD_DROP_OBJECT": "EVT_VOICE_COMMAND_DROP",
+    "CMD_PLAY_DEAD": "EVT_VOICE_COMMAND_PLAY_DEAD",
+    "CMD_BRING_OBJECT": "EVT_VOICE_COMMAND_BRING",
+    "CMD_FETCH": "EVT_VOICE_COMMAND_FETCH",
+}
 SCENARIOS = (
     ("high_hunger", "High Hunger", "Hunger overflow drives food seeking"),
     ("low_energy", "Low Energy", "Critical energy drives recharge"),
@@ -600,6 +619,12 @@ def _custom_template(group: str, label: str) -> EventTemplate:
 def _build_custom_audio(fields: dict[str, str]) -> tuple[str, tuple[InjectionMessage, ...]]:
     event_type = _field(fields, "audio_event_type", "EVT_VOICE_COMMAND_KNOWN").upper()
     confidence = _clamp(_float_field(fields, "audio_confidence", 0.95), 0.0, 1.0)
+    command_id = _field(fields, "audio_command_id", "CMD_SIT")
+    if event_type == "EVT_VOICE_COMMAND_KNOWN":
+        event_type = _VOICE_EVENT_BY_COMMAND_ID.get(
+            command_id,
+            "EVT_VOICE_COMMAND_UNKNOWN",
+        )
     payload: dict[str, Any] = {
         "header": {"frame_id": "base_link"},
         "event_type": event_type,
@@ -626,7 +651,6 @@ def _build_custom_audio(fields: dict[str, str]) -> tuple[str, tuple[InjectionMes
             }
         )
     else:
-        command_id = _field(fields, "audio_command_id", "CMD_SIT")
         if event_type == "EVT_VOICE_COMMAND_UNKNOWN" and command_id == "CMD_SIT":
             command_id = "CMD_UNKNOWN"
         payload.update(
@@ -638,7 +662,10 @@ def _build_custom_audio(fields: dict[str, str]) -> tuple[str, tuple[InjectionMes
                 "slots": [{"key": "raw_tag", "value": _raw_tag_for_command(command_id, event_type)}],
                 "asr_text": _field(fields, "audio_asr_text", ""),
                 "response_text": "",
-                "is_executable": event_type == "EVT_VOICE_COMMAND_KNOWN" and command_id != "CMD_UNKNOWN",
+                "is_executable": (
+                    event_type in _VOICE_EVENT_BY_COMMAND_ID.values()
+                    and command_id != "CMD_UNKNOWN"
+                ),
                 "state": "execution",
                 "latency_ms": 0.0,
             }
@@ -1109,7 +1136,10 @@ def _audio_command_template(
 ) -> EventTemplate:
     payload: dict[str, Any] = {
         "header": {"frame_id": "base_link"},
-        "event_type": "EVT_VOICE_COMMAND_KNOWN",
+        "event_type": _VOICE_EVENT_BY_COMMAND_ID.get(
+            command_id,
+            "EVT_VOICE_COMMAND_UNKNOWN",
+        ),
         "command_id": command_id,
         "intent_category": "command",
         "intent_source": "manual_ui",

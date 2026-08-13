@@ -8,13 +8,10 @@ setup(
     packages=find_packages(exclude=["test"]),
     package_data={
         package_name: [
-            "assets/dog/marsdog_stand.png",
-            "assets/dog/marsdog_walk.png",
-            "assets/dog/marsdog_sit.png",
-            "assets/dog/marsdog_lie.png",
-            "assets/dog/marsdog_play_bow.png",
-            "assets/dog/marsdog_paw.png",
+            "assets/dog/*.png",
+            "assets/human/*.png",
             "assets/backgrounds/*.png",
+            "assets/config/*.yaml",
         ]
     },
     include_package_data=True,

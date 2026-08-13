@@ -10,6 +10,51 @@ from .sim_state import SimEvent
 Parser = Callable[[dict[str, Any]], SimEvent]
 
 
+def parse_simulation_time_state(data: dict[str, Any]) -> SimEvent:
+    source = _payload_object(
+        data,
+        "time_state",
+        "timeState",
+        "payload",
+        required_keys=(
+            "timeContext",
+            "time_context",
+            "virtualDateTime",
+            "virtual_datetime",
+        ),
+    )
+    raw_context = _first_present(
+        source.get("timeContext"),
+        source.get("time_context"),
+    )
+    time_context = _normalize_time_context(raw_context)
+    if not time_context:
+        time_context = _normalize_time_context(source)
+    payload = {
+        "event_type": _first_present(
+            source.get("event_type"),
+            source.get("eventType"),
+        ),
+        "tickSequence": _first_present(
+            source.get("tickSequence"),
+            source.get("tick_sequence"),
+        ),
+        "timeContext": time_context,
+        "raw": data,
+    }
+    summary = (
+        f"simulation_time: {payload.get('event_type') or 'unknown'} "
+        f"virtual={time_context.get('virtualDateTime') or '-'} "
+        f"scale={_dash(time_context.get('effectiveScale'))}"
+    )
+    return SimEvent(
+        "simulation_time_state",
+        config.TOPICS["simulation_time_state"],
+        payload,
+        summary,
+    )
+
+
 def parse_visual_event(data: dict[str, Any]) -> SimEvent:
     events = _string_list(data.get("events"))
     active_target = _dict_or_none(data.get("active_target"))
@@ -73,16 +118,64 @@ def parse_audio_event(data: dict[str, Any]) -> SimEvent:
 
 
 def parse_internal_need_state(data: dict[str, Any]) -> SimEvent:
-    payload = _pick(
+    source = _payload_object(
         data,
-        "schema_version",
-        "timestamp",
-        "event_type",
-        "demands",
-        "levelEvents",
-        "triggered",
-        "sleep",
+        "state",
+        "need_state",
+        "needState",
+        "payload",
+        required_keys=(
+            "demands",
+            "needs",
+            "needStates",
+            "internalNeeds",
+            "triggered",
+        ),
     )
+    raw_demands = _first_present(
+        source.get("demands"),
+        source.get("needs"),
+        source.get("needStates"),
+        source.get("internalNeeds"),
+    )
+    demands = _normalize_named_state_map(raw_demands, config.DEMAND_NAMES)
+    if not demands:
+        demands = _normalize_top_level_states(source, config.DEMAND_NAMES)
+    payload = {
+        "schema_version": _first_present(
+            source.get("schema_version"),
+            source.get("schemaVersion"),
+        ),
+        "timestamp": source.get("timestamp"),
+        "event_type": _first_present(
+            source.get("event_type"),
+            source.get("eventType"),
+        ),
+        "demands": demands,
+        "levelEvents": _normalize_named_value_map(
+            _first_present(
+                source.get("levelEvents"),
+                source.get("level_events"),
+            ),
+            config.DEMAND_NAMES,
+        ),
+        "triggered": _first_present(
+            source.get("triggered"),
+            source.get("activeDemands"),
+            source.get("active_demands"),
+        ),
+        "sleep": _first_present(
+            source.get("sleep"),
+            source.get("sleepState"),
+            source.get("sleep_state"),
+        ),
+        "timeContext": _normalize_time_context(
+            _first_present(
+                source.get("timeContext"),
+                source.get("time_context"),
+            )
+        ),
+    }
     payload["raw"] = data
     active = _active_names(payload.get("triggered"))
     summary = "need_state: " + (f"triggered={','.join(active)}" if active else "updated")
@@ -95,21 +188,78 @@ def parse_internal_need_state(data: dict[str, Any]) -> SimEvent:
 
 
 def parse_internal_need_signal_event(data: dict[str, Any]) -> SimEvent:
-    payload = _pick(
+    source = _payload_object(
         data,
-        "schema_version",
-        "timestamp",
-        "event_type",
-        "demand",
-        "value",
-        "level",
-        "previousLevel",
-        "triggerThreshold",
-        "triggerOperator",
-        "overflowThreshold",
-        "overflowOperator",
-        "trigger",
+        "signal",
+        "event",
+        "payload",
+        required_keys=("demand", "need", "event_type", "eventType"),
     )
+    demand = _canonical_name(
+        _first_present(
+            source.get("demand"),
+            source.get("need"),
+            source.get("name"),
+            source.get("type"),
+        ),
+        config.DEMAND_NAMES,
+    )
+    payload = {
+        "schema_version": _first_present(
+            source.get("schema_version"),
+            source.get("schemaVersion"),
+        ),
+        "timestamp": source.get("timestamp"),
+        "event_type": _first_present(
+            source.get("event_type"),
+            source.get("eventType"),
+        ),
+        "demand": demand,
+        "value": _first_present(
+            source.get("value"),
+            source.get("currentValue"),
+            source.get("current_value"),
+        ),
+        "level": _first_present(
+            source.get("level"),
+            source.get("state"),
+        ),
+        "previousLevel": _first_present(
+            source.get("previousLevel"),
+            source.get("previous_level"),
+        ),
+        "triggerThreshold": _first_present(
+            source.get("triggerThreshold"),
+            source.get("trigger_threshold"),
+        ),
+        "triggerOperator": _first_present(
+            source.get("triggerOperator"),
+            source.get("trigger_operator"),
+        ),
+        "urgentThreshold": _first_present(
+            source.get("urgentThreshold"),
+            source.get("urgent_threshold"),
+        ),
+        "urgentOperator": _first_present(
+            source.get("urgentOperator"),
+            source.get("urgent_operator"),
+        ),
+        "overflowThreshold": _first_present(
+            source.get("overflowThreshold"),
+            source.get("overflow_threshold"),
+        ),
+        "overflowOperator": _first_present(
+            source.get("overflowOperator"),
+            source.get("overflow_operator"),
+        ),
+        "trigger": source.get("trigger"),
+        "timeContext": _normalize_time_context(
+            _first_present(
+                source.get("timeContext"),
+                source.get("time_context"),
+            )
+        ),
+    }
     payload["raw"] = data
     summary = (
         f"need_signal: {payload.get('event_type') or 'unknown'} "
@@ -127,6 +277,8 @@ def parse_internal_need_signal_event(data: dict[str, Any]) -> SimEvent:
 def parse_emotion_state(data: dict[str, Any]) -> SimEvent:
     payload = _pick(
         data,
+        "schema_version",
+        "timestamp",
         "emotions",
         "levelEvents",
         "triggered",
@@ -136,6 +288,7 @@ def parse_emotion_state(data: dict[str, Any]) -> SimEvent:
         "dominant_emotion_signal",
         "personality",
         "lastEmotionEventResult",
+        "timeContext",
     )
     payload["dominantEmotion"] = _first_present(
         payload.get("dominantEmotion"),
@@ -144,6 +297,12 @@ def parse_emotion_state(data: dict[str, Any]) -> SimEvent:
     payload["dominantEmotionSignal"] = _first_present(
         payload.get("dominantEmotionSignal"),
         payload.get("dominant_emotion_signal"),
+    )
+    payload["timeContext"] = _normalize_time_context(
+        _first_present(
+            data.get("timeContext"),
+            data.get("time_context"),
+        )
     )
     payload["raw"] = data
     dominant = payload.get("dominantEmotion") or "-"
@@ -161,15 +320,26 @@ def parse_emotion_state(data: dict[str, Any]) -> SimEvent:
 def parse_emotion_signal_event(data: dict[str, Any]) -> SimEvent:
     payload = _pick(
         data,
+        "schema_version",
+        "timestamp",
         "event_type",
         "emotion",
         "value",
+        "triggerThreshold",
+        "triggerOperator",
         "level",
         "zone",
         "range",
         "trigger",
         "isDominant",
         "dominantChanged",
+        "timeContext",
+    )
+    payload["timeContext"] = _normalize_time_context(
+        _first_present(
+            data.get("timeContext"),
+            data.get("time_context"),
+        )
     )
     payload["raw"] = data
     level = _first_present(payload.get("level"), payload.get("zone"), payload.get("range"))
@@ -261,6 +431,7 @@ def parse_personality_state(data: dict[str, Any]) -> SimEvent:
 
 
 PARSER_BY_TOPIC: dict[str, Parser] = {
+    config.TOPICS["simulation_time_state"]: parse_simulation_time_state,
     config.TOPICS["visual_event"]: parse_visual_event,
     config.TOPICS["audio_event"]: parse_audio_event,
     config.TOPICS["internal_need_state"]: parse_internal_need_state,
@@ -326,6 +497,172 @@ def _first_present(*values: Any) -> Any:
         if value is not None:
             return value
     return None
+
+
+def _payload_object(
+    data: dict[str, Any],
+    *container_keys: str,
+    required_keys: tuple[str, ...],
+) -> dict[str, Any]:
+    """Return a documented object or a common JSON envelope containing it."""
+
+    if any(key in data for key in required_keys):
+        return data
+    for key in container_keys:
+        candidate = data.get(key)
+        if (
+            isinstance(candidate, dict)
+            and any(name in candidate for name in required_keys)
+        ):
+            return {**data, **candidate}
+    return data
+
+
+def _normalize_time_context(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    aliases = {
+        "scale": ("scale",),
+        "effectiveScale": ("effectiveScale", "effective_scale"),
+        "virtualDateTime": ("virtualDateTime", "virtual_datetime"),
+        "virtualTimestamp": ("virtualTimestamp", "virtual_timestamp"),
+        "virtualElapsedSeconds": (
+            "virtualElapsedSeconds",
+            "virtual_elapsed_seconds",
+        ),
+        "wallTimestamp": ("wallTimestamp", "wall_timestamp"),
+    }
+    normalized: dict[str, Any] = {}
+    for canonical, keys in aliases.items():
+        value = _first_present(*(source.get(key) for key in keys))
+        if value is not None:
+            normalized[canonical] = value
+    return normalized
+
+
+def _normalize_named_state_map(
+    value: Any,
+    canonical_names: tuple[str, ...],
+) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    if isinstance(value, dict):
+        items = value.items()
+    elif isinstance(value, (list, tuple)):
+        items = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            name = _first_present(
+                item.get("demand"),
+                item.get("need"),
+                item.get("name"),
+                item.get("type"),
+            )
+            if name is not None:
+                items.append((name, item))
+    else:
+        return normalized
+
+    for raw_name, raw_state in items:
+        name = _canonical_name(raw_name, canonical_names)
+        if name is None:
+            continue
+        normalized[name] = _normalize_state_value(raw_state)
+    return normalized
+
+
+def _normalize_top_level_states(
+    source: dict[str, Any],
+    canonical_names: tuple[str, ...],
+) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for name in canonical_names:
+        value = None
+        for key in (
+            name,
+            name.lower(),
+            _camel_to_snake(name),
+            f"{name.lower()}Value",
+            f"{_camel_to_snake(name)}_value",
+        ):
+            if key in source:
+                value = source.get(key)
+                break
+        if value is not None:
+            normalized[name] = _normalize_state_value(value)
+    return normalized
+
+
+def _normalize_named_value_map(
+    value: Any,
+    canonical_names: tuple[str, ...],
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        canonical: raw_value
+        for raw_name, raw_value in value.items()
+        if (canonical := _canonical_name(raw_name, canonical_names)) is not None
+    }
+
+
+def _normalize_state_value(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    normalized = dict(value)
+    normalized["value"] = _first_present(
+        value.get("value"),
+        value.get("current"),
+        value.get("currentValue"),
+        value.get("current_value"),
+        value.get("score"),
+    )
+    normalized["level"] = _first_present(
+        value.get("level"),
+        value.get("state"),
+        value.get("status"),
+    )
+    level_event = _first_present(
+        value.get("levelEvent"),
+        value.get("level_event"),
+        value.get("eventType"),
+        value.get("event_type"),
+    )
+    if level_event is not None:
+        normalized["levelEvent"] = level_event
+    triggered = _first_present(
+        value.get("triggered"),
+        value.get("isTriggered"),
+        value.get("is_triggered"),
+        value.get("active"),
+    )
+    if triggered is not None:
+        normalized["triggered"] = triggered
+    return normalized
+
+
+def _canonical_name(
+    value: Any,
+    canonical_names: tuple[str, ...],
+) -> str | None:
+    if value is None:
+        return None
+    key = "".join(character for character in str(value).casefold() if character.isalnum())
+    for name in canonical_names:
+        canonical_key = "".join(
+            character for character in name.casefold() if character.isalnum()
+        )
+        if key == canonical_key:
+            return name
+    return str(value)
+
+
+def _camel_to_snake(value: str) -> str:
+    characters: list[str] = []
+    for character in value:
+        if character.isupper() and characters:
+            characters.append("_")
+        characters.append(character.lower())
+    return "".join(characters)
 
 
 def _string_list(value: Any) -> list[str]:

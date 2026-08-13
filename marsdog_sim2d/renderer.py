@@ -12,8 +12,13 @@ import arcade
 from arcade.texture_atlas import DefaultTextureAtlas
 
 from . import config
+from .action_visuals import is_text_only_action, visual_for_action
 from .drawing import draw_text
 from .sim_state import SimState
+
+_VIRTUAL_USER_WIDTH = 64.0
+_VIRTUAL_USER_HEIGHT = 154.0
+_VIRTUAL_USER_Y_OFFSET = 23.0
 
 
 class WorldRenderer:
@@ -24,15 +29,61 @@ class WorldRenderer:
         dog_asset_dir = asset_root / "dog"
         self._dog_textures: dict[str, Any] = {}
         self._dog_texture_atlases: dict[str, Any] = {}
+        self._user_texture: Any | None = None
         self._room_background_texture: Any | None = None
         self._texture_atlas_ready = False
         try:
             self._dog_textures = {
                 pose: arcade.load_texture(dog_asset_dir / f"marsdog_{pose}.png")
-                for pose in ("stand", "walk", "sit", "lie", "play_bow", "paw")
+                for pose in (
+                    "stand",
+                    "walk",
+                    "sit",
+                    "lie",
+                    "play_bow",
+                    "paw",
+                    "sleep_closed",
+                    "groom",
+                    "toilet",
+                    "shake",
+                    "eat",
+                    "joy_belly",
+                    "excite_toy",
+                    "anxiety_cower",
+                    "fear_cover",
+                    "curious_paw",
+                    "play_dead",
+                    "spin",
+                    "whine",
+                    "chew_carry_food",
+                    "scratch_food",
+                    "burp",
+                    "lick_lips_nose",
+                    "carry_bowl",
+                    "scratch_ground",
+                    "body_rub_object",
+                    "scratch_ear",
+                    "stretch",
+                    "yawn",
+                    "sploot",
+                    "wake_crawl",
+                    "wake_roll",
+                    "wake_spring",
+                    "wake_stretch",
+                    "wake_sit_up",
+                    "bark_lying",
+                    "tentative_bark_whine",
+                    "head_tilt_observe",
+                )
             }
         except (FileNotFoundError, OSError, RuntimeError):
             self._dog_textures = {}
+        try:
+            self._user_texture = arcade.load_texture(
+                asset_root / "human" / "virtual_owner.png"
+            )
+        except (FileNotFoundError, OSError, RuntimeError):
+            self._user_texture = None
         try:
             self._room_background_texture = arcade.load_texture(
                 asset_root / "backgrounds" / "apartment_floorplan_runtime.png"
@@ -43,6 +94,11 @@ class WorldRenderer:
     def draw(self, state: SimState) -> None:
         now = time.time()
         view_state = self._screen_state(state)
+        if state.ui_food_waiting and not state.virtual_motion_active():
+            # Empty-bowl waiting is a UI-only loop: keep the low-head image
+            # close to the bowl while adding a small back-and-forth sniff.
+            view_state.dog_x += math.sin(now * 3.4) * 4.0
+            view_state.dog_y += math.sin(now * 6.8) * 1.5
         self._prepare_texture_atlas()
         old_scissor = arcade.get_window().ctx.scissor
         arcade.get_window().ctx.scissor = (
@@ -81,6 +137,8 @@ class WorldRenderer:
         ctx = arcade.get_window().ctx
         if self._room_background_texture is not None:
             ctx.default_atlas.add(self._room_background_texture)
+        if self._user_texture is not None:
+            ctx.default_atlas.add(self._user_texture)
         self._dog_texture_atlases = {
             pose: DefaultTextureAtlas((512, 512), textures=[texture], ctx=ctx)
             for pose, texture in self._dog_textures.items()
@@ -107,7 +165,15 @@ class WorldRenderer:
             return "dog"
         view_state = self._screen_state(state)
         user_x, user_y = view_state.user_x, view_state.user_y
-        if math.hypot(x - user_x, y - user_y) <= 42:
+        if (
+            state.ui_user_visible
+            and abs(x - user_x) <= _VIRTUAL_USER_WIDTH / 2
+            and (
+                user_y + _VIRTUAL_USER_Y_OFFSET - _VIRTUAL_USER_HEIGHT / 2
+                <= y
+                <= user_y + _VIRTUAL_USER_Y_OFFSET + _VIRTUAL_USER_HEIGHT / 2
+            )
+        ):
             return "user"
         for name, item in state.room_objects.items():
             object_x = _float_or_none(item.get("x"))
@@ -140,6 +206,26 @@ class WorldRenderer:
             if x is not None and y is not None:
                 copied["x"], copied["y"] = self.scene_to_screen(x, y)
             view_state.room_objects[str(name)] = copied
+        action = str(state.action_visual_action or state.action_current_action or "")
+        toy = view_state.room_objects.get("toy")
+        if (
+            isinstance(toy, dict)
+            and bool(toy.get("active"))
+            and state.action_status == "running"
+            and _action_matches(
+                action,
+                "RETURN_TO_OWNER",
+                "CARRY_TO_OWNER",
+                "TROT_TOWARDS_OWNER",
+            )
+        ):
+            # Keep the carried ball locked to the interpolated dog position.
+            # Object feedback itself is not smoothed, so drawing its raw
+            # coordinates here would make it jump ahead of the dog.
+            toy["x"], toy["y"] = self.scene_to_screen(
+                state.dog_x + 46.0,
+                state.dog_y + 4.0,
+            )
         if isinstance(state.active_target, dict):
             target = dict(state.active_target)
             x = _float_or_none(target.get("x"))
@@ -709,7 +795,35 @@ class WorldRenderer:
 
     def _draw_dog_sprite(self, state: SimState, now: float) -> None:
         action = _action_key(state)
-        pose = _dog_pose_for_action(action)
+        # Pose selection must follow the current ACT instead of the whole
+        # behavior name.  Otherwise a behavior such as ``sleepNow`` selects
+        # the lying texture even while its current ACT is still walking.
+        pose_action = (
+            "ACT_VOCAL_WHINE"
+            if state.ui_abnormal_simulation_active
+            else str(state.action_visual_action or state.action_current_action or "")
+        )
+        if not pose_action or pose_action == "-":
+            # A Goal does not identify its selected ACT.  Until its first
+            # Stage Feedback arrives, do not guess a pose from behavior_name.
+            pose_action = (
+                ""
+                if state.action_status in {"pending", "running"}
+                else str(state.active_behavior or "")
+            )
+        pose = _dog_pose_for_action(
+            pose_action,
+            progress=state.action_visual_progress,
+            running=state.action_status == "running" or state.virtual_motion_active(),
+        )
+        if (
+            state.virtual_motion_active()
+            and state.action_pending_visual_action is not None
+        ):
+            # A destination interaction (eat, sleep, give paw...) must not
+            # slide across the room in its final pose.  Keep the reported ACT
+            # label untouched while the sprite walks to the Stage target.
+            pose = "walk"
         texture = self._dog_textures.get(pose) or self._dog_textures["stand"]
         x = state.dog_x
         y = state.dog_y
@@ -728,9 +842,25 @@ class WorldRenderer:
         if pose == "walk" and state.action_status == "running":
             self._draw_motion_trail(x, state.dog_y, math.radians(state.dog_heading), now)
 
-        size = 148.0 if pose in {"stand", "walk", "play_bow", "lie"} else 142.0
-        shadow_width = 104.0 if pose not in {"sit", "paw"} else 76.0
-        shadow_height = 20.0 if pose != "lie" else 16.0
+        size = 148.0 if pose in {
+            "stand",
+            "walk",
+            "play_bow",
+            "lie",
+            "sleep_closed",
+            "shake",
+            "eat",
+            "joy_belly",
+            "excite_toy",
+            "anxiety_cower",
+            "fear_cover",
+            "curious_paw",
+            "play_dead",
+            "spin",
+            "whine",
+        } else 142.0
+        shadow_width = 104.0 if pose not in {"sit", "paw", "groom", "toilet"} else 76.0
+        shadow_height = 16.0 if pose in {"lie", "sleep_closed", "play_dead"} else 20.0
         arcade.draw_ellipse_filled(
             x,
             state.dog_y - 36,
@@ -738,7 +868,12 @@ class WorldRenderer:
             shadow_height,
             (*config.COLORS["shadow"], 105),
         )
-        angle = state.dog_heading % 360.0
+        # These character assets are side-view sprites, not top-down sprites.
+        # Rotating them with the logical navigation heading makes the puppy
+        # appear upside down when it approaches targets to the left or below.
+        # Keep every pose upright (paws toward the bottom of the screen);
+        # dog_heading still drives movement, trails, targets and effects.
+        angle = _dog_sprite_angle(state.dog_heading)
         arcade.draw_texture_rect(
             texture,
             arcade.LBWH(x - size / 2, y - size / 2, size, size),
@@ -754,6 +889,14 @@ class WorldRenderer:
             bold=True,
             anchor_x="center",
         )
+        action_id = str(state.action_current_action or "")
+        if is_text_only_action(action_id):
+            _draw_tag(
+                x - 94,
+                y + size / 2 + 24,
+                f"仅文字展示：{_truncate(action_id, 34)}",
+                config.COLORS["warning"],
+            )
 
     def _draw_motion_trail(
         self,
@@ -812,6 +955,9 @@ class WorldRenderer:
             arcade.draw_circle_filled(foot[0], foot[1], 5, config.COLORS["dog_dark"])
 
     def _draw_user_or_target(self, state: SimState) -> None:
+        if not state.ui_user_visible or self._user_texture is None:
+            return
+
         target = state.active_target or {}
         x, y = state.user_x, state.user_y
         identity = target.get("identity") or "user"
@@ -830,69 +976,61 @@ class WorldRenderer:
         )
 
         target_active = bool(state.active_target) or social_active
-        arcade.draw_ellipse_filled(x, y - 30, 58, 14, (*config.COLORS["shadow"], 105))
+        arcade.draw_ellipse_filled(
+            x,
+            y - 54,
+            58,
+            13,
+            (*config.COLORS["shadow"], 105),
+        )
         if target_active:
             pulse = 1.0 + math.sin(time.time() * 5.5) * 0.1
-            arcade.draw_circle_outline(x, y, 42 * pulse, config.COLORS["target"], 2)
-            arcade.draw_circle_outline(x, y, 52 * pulse, (*config.COLORS["target"], 90), 1)
-
-        clothing = config.COLORS["furniture_fabric_dark"]
-        skin = (207, 166, 126)
-        hair = (76, 57, 45)
-        pose_action = str(target.get("pose_action") or "").lower()
-        latest_events = (state.latest_visual_event or {}).get("events") or []
-        fallen = pose_action == "fallen_down" or any("FALL" in str(event) for event in latest_events)
-        if fallen:
-            arcade.draw_ellipse_filled(x, y - 4, 72, 26, clothing, tilt_angle=-16)
-            arcade.draw_circle_filled(x + 38, y - 14, 18, hair)
-            arcade.draw_circle_filled(x + 34, y - 11, 14, skin)
-            arcade.draw_line(x - 25, y - 4, x - 49, y + 10, clothing, 6)
-            arcade.draw_line(x - 22, y - 10, x - 47, y - 24, clothing, 6)
-            draw_text(
-                _truncate(_display_scene_label(str(identity)), 18),
-                x + 46,
-                y + 22,
-                config.COLORS["world_text"],
-                config.FONT_SIZE,
-                bold=True,
+            arcade.draw_circle_outline(
+                x,
+                y,
+                48 * pulse,
+                config.COLORS["target"],
+                2,
             )
-            return
+            arcade.draw_circle_outline(
+                x,
+                y,
+                58 * pulse,
+                (*config.COLORS["target"], 90),
+                1,
+            )
 
-        arcade.draw_line(x - 10, y - 26, x - 20, y - 43, clothing, 6)
-        arcade.draw_line(x + 10, y - 26, x + 20, y - 43, clothing, 6)
-        arcade.draw_ellipse_filled(x, y - 12, 38, 48, clothing)
-        hand_interaction = state.action_status == "running" and _action_matches(
-            action,
-            "HAND",
-            "HIGH_FIVE",
-            "PAW_AT",
-            "CUDDLE",
-            "NUDGE",
+        if state.ui_dragging_user:
+            pulse = 1.0 + math.sin(time.time() * 8.0) * 0.08
+            arcade.draw_circle_outline(
+                x,
+                y + 4,
+                62 * pulse,
+                config.COLORS["button_active_blue_border"],
+                3,
+            )
+
+        arcade.draw_texture_rect(
+            self._user_texture,
+            arcade.LBWH(
+                x - _VIRTUAL_USER_WIDTH / 2,
+                y + _VIRTUAL_USER_Y_OFFSET - _VIRTUAL_USER_HEIGHT / 2,
+                _VIRTUAL_USER_WIDTH,
+                _VIRTUAL_USER_HEIGHT,
+            ),
         )
-        stop_gesture = pose_action == "stop_gesture" or any("STOP_GESTURE" in str(event) for event in latest_events)
-        if hand_interaction:
-            dx = state.dog_x - x
-            dy = state.dog_y - y
-            distance = max(1.0, math.hypot(dx, dy))
-            hand_x = x + dx / distance * 39.0
-            hand_y = y + dy / distance * 39.0
-            arcade.draw_line(x - 11, y - 7, hand_x, hand_y, skin, 7)
-            arcade.draw_circle_filled(hand_x, hand_y, 5, skin)
-            arcade.draw_line(x + 16, y - 8, x + 31, y - 24, skin, 6)
-        elif stop_gesture:
-            arcade.draw_line(x - 14, y - 8, x - 22, y + 30, skin, 7)
-            arcade.draw_circle_filled(x - 22, y + 34, 6, skin)
-            arcade.draw_line(x + 16, y - 8, x + 31, y - 24, skin, 6)
-        else:
-            arcade.draw_line(x - 16, y - 8, x - 31, y - 24, skin, 6)
-            arcade.draw_line(x + 16, y - 8, x + 31, y - 24, skin, 6)
-        arcade.draw_circle_filled(x, y + 17, 20, hair)
-        arcade.draw_circle_filled(x + 2, y + 13, 16, skin)
-        arcade.draw_circle_filled(x + 9, y + 13, 2, config.COLORS["world_text"])
+        if state.ui_dragging_user:
+            _draw_tag(
+                x + 26,
+                y + 111,
+                "移动中 · 左键锁定 · 右键复位",
+                config.COLORS["button_active_blue_border"],
+            )
+
         draw_text(
             _truncate(_display_scene_label(str(identity)), 18),
-            x + 28,
-            y + 31,
+            x + 34,
+            y + 86,
             config.COLORS["world_text"],
             config.FONT_SIZE,
             bold=True,
@@ -900,8 +1038,8 @@ class WorldRenderer:
         if speaker_id:
             draw_text(
                 _truncate(f"说话人：{speaker_id}", 22),
-                x - 48,
-                y - 63,
+                x - 50,
+                y - 69,
                 config.COLORS["world_muted"],
                 config.FONT_SIZE_SMALL,
             )
@@ -1099,7 +1237,7 @@ class WorldRenderer:
             arcade.draw_lbwh_rectangle_filled(sx, strip_top - 8, seg_w, 7 * pulse, _mix(seg_color, (20, 24, 24), 0.35))
             arcade.draw_lbwh_rectangle_outline(sx, strip_top - 8, seg_w, 7 * pulse, seg_color, 1)
         draw_text(
-            _truncate(("~" if state.action_stage_estimated else "") + (state.action_stage_label or "-"), 28),
+            _truncate(state.action_stage_label or "-", 28),
             strip_left,
             strip_top - 11,
             config.COLORS["muted_text"],
@@ -1180,7 +1318,7 @@ class WorldRenderer:
             for offset in (-14, -5, 7, 18):
                 arcade.draw_circle_filled(x + offset, y + 36 + math.sin(now * 5 + offset) * 3, 2, (225, 169, 94))
 
-        if _action_matches(action, "SLEEP", "REST", "CALM", "CURLED"):
+        if _sleep_indicator_visible(state):
             for index, letter in enumerate(("Z", "z", "z")):
                 draw_text(
                     letter,
@@ -1294,7 +1432,13 @@ class WorldRenderer:
             pulse = 1.0 + (math.sin(now * 8.0) * 0.12 if active else 0.0)
 
             if name == "bowl" or kind == "food":
-                self._draw_food_bowl(x, y, active, pulse)
+                self._draw_food_bowl(
+                    x,
+                    y,
+                    active,
+                    pulse,
+                    has_food=state.ui_bowl_has_food,
+                )
             elif name == "bed" or kind == "rest":
                 self._draw_bed(x, y, active, pulse)
             elif name == "pad" or kind == "need":
@@ -1320,13 +1464,43 @@ class WorldRenderer:
                     config.FONT_SIZE_SMALL,
                 )
 
-    def _draw_food_bowl(self, x: float, y: float, active: bool, pulse: float) -> None:
+    def _draw_food_bowl(
+        self,
+        x: float,
+        y: float,
+        active: bool,
+        pulse: float,
+        *,
+        has_food: bool,
+    ) -> None:
         body = config.COLORS["need"] if active else _mix(config.COLORS["need"], config.COLORS["world_tile"], 0.28)
         arcade.draw_ellipse_filled(x + 2, y - 3, 32 * pulse, 15 * pulse, (*config.COLORS["shadow"], 80))
         arcade.draw_ellipse_filled(x, y, 30 * pulse, 16 * pulse, body)
         arcade.draw_arc_outline(x, y + 3, 30 * pulse, 16 * pulse, config.COLORS["furniture_cream"], 0, 180, 1)
-        for dx, dy in ((-6, 3), (2, 4), (7, 2)):
-            arcade.draw_circle_filled(x + dx, y + dy, 2, config.COLORS["furniture_wood"])
+        if has_food:
+            food_color = config.COLORS["furniture_wood"]
+            arcade.draw_ellipse_filled(
+                x,
+                y + 2,
+                22 * pulse,
+                9 * pulse,
+                _mix(food_color, config.COLORS["furniture_cream"], 0.18),
+            )
+            for dx, dy in (
+                (-8, 2),
+                (-4, 5),
+                (0, 1),
+                (4, 5),
+                (8, 2),
+                (-1, 6),
+                (6, 7),
+            ):
+                arcade.draw_circle_filled(
+                    x + dx * pulse,
+                    y + dy * pulse,
+                    max(1.5, 2.1 * pulse),
+                    food_color,
+                )
 
     def _draw_bed(self, x: float, y: float, active: bool, pulse: float) -> None:
         edge = config.COLORS["success"] if active else config.COLORS["furniture_wood"]
@@ -1550,6 +1724,12 @@ def _action_target_position(state: SimState) -> tuple[float, float, str] | None:
         ("FOOD", "bowl"),
         ("PAD", "pad"),
         ("TOILET", "pad"),
+        ("SQUAT", "pad"),
+        ("URINAT", "pad"),
+        ("PEE", "pad"),
+        ("POOP", "pad"),
+        ("BLADDER_RELIEF", "pad"),
+        ("RELIEVE_BLADDER", "pad"),
         ("BED", "bed"),
         ("SLEEP", "bed"),
         ("TOY", "toy"),
@@ -1599,34 +1779,58 @@ def _action_key(state: SimState) -> str:
     return f"{action} {behavior}".upper().replace("-", "_")
 
 
-def _dog_pose_for_action(action: str) -> str:
-    if _action_matches(action, "PLAY_BOW", "INVITE_HUMAN_TO_PLAY", "INVITE_ANIMAL_TO_PLAY"):
-        return "play_bow"
-    if _action_matches(action, "HAND_INTERACTION", "HIGH_FIVE", "PAW_AT", "PAW_POUNCE"):
-        return "paw"
-    if _action_matches(action, "SLEEP", "LIE_DOWN", "LYING", "CURLED", "PLAY_DEAD", "REST_IN_PLACE"):
-        return "lie"
-    if _action_matches(action, "SIT", "CUDDLE", "OWNER_ATTENTION", "USE_TOILET"):
-        return "sit"
-    if _action_matches(
-        action,
-        "LOCO_",
-        "WALK",
-        "TROT",
-        "RUN",
-        "APPROACH",
-        "FOLLOW",
-        "MATCH_OWNER",
-        "FLEE",
-        "HIDE_AWAY",
-        "ZOOMIES",
-    ) and not _action_matches(action, "HOP_IN_PLACE", "DOCKED"):
-        return "walk"
+def _dog_pose_for_action(
+    action: str,
+    *,
+    progress: float | None = None,
+    running: bool = False,
+) -> str:
+    del progress, running
+    visual = visual_for_action(str(action or ""))
+    if visual is not None:
+        return visual.pose
+    # Unknown and text-only actions deliberately keep the neutral pose.  The
+    # exact ACT remains visible in the status card and scene warning tag.
     return "stand"
+
+
+def _dog_sprite_angle(heading: float) -> float:
+    """Keep side-view character art upright regardless of navigation heading."""
+    del heading
+    return 0.0
 
 
 def _action_matches(action: str, *needles: str) -> bool:
     return any(needle.upper() in action for needle in needles)
+
+
+def _sleep_indicator_visible(state: SimState) -> bool:
+    """Show Zz only while the authoritative state says the dog is sleeping."""
+
+    action = str(
+        state.action_visual_action
+        or state.action_current_action
+        or ""
+    )
+    if action.startswith("ACT_GETUP_"):
+        return False
+
+    need_state = state.internal_need_state or {}
+    sleep_state = need_state.get("sleep")
+    if isinstance(sleep_state, dict) and "isSleeping" in sleep_state:
+        return bool(sleep_state.get("isSleeping"))
+
+    if state.action_status != "running":
+        return False
+    action = action.upper()
+    return _action_matches(
+        action,
+        "SLEEP_ON_SIDE",
+        "SLEEPING",
+        "ASLEEP",
+        "CURLED_SLEEP",
+        "NAP",
+    )
 
 
 def _action_color(state: SimState) -> tuple[int, int, int]:
@@ -1665,10 +1869,8 @@ def _status_color(state: SimState) -> tuple[int, int, int]:
 
 def _compact_action_label(action: str) -> str:
     label = action
-    for prefix in ("ACT_POSTURE_", "ACT_LOCO_", "ACT_HEAD_", "ACT_TAIL_", "ACT_MOUTH_", "ACT_PAW_", "ACT_NAV_", "ACT_"):
-        if label.startswith(prefix):
-            label = label[len(prefix):]
-            break
+    if label.startswith("ACT_"):
+        label = label[4:]
     return _truncate(label.lower(), 34)
 
 

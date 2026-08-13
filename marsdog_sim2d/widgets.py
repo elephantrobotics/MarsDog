@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import math
 import time
@@ -10,9 +11,11 @@ from typing import Any, Iterable
 import arcade
 
 from . import config
+from .action_visuals import visual_for_action
 from .drawing import draw_text
 from .event_injector import SCENARIOS, resolve_emotion_output, resolve_need_output
 from .sim_state import SimState
+from .voice_commands import voice_command_display
 
 
 INPUT_TABS = ("Event", "State", "Command", "Scenario")
@@ -62,6 +65,15 @@ OPTION_LABELS = {
     "CMD_LIE_DOWN": "趴下",
     "CMD_SPIN": "转圈",
     "CMD_FETCH": "取物",
+    "CMD_STAND_UP": "站起",
+    "CMD_WAIT": "等待",
+    "CMD_GIVE_PAW": "握手",
+    "CMD_HIGH_FIVE": "击掌",
+    "CMD_ROLL_OVER": "翻滚",
+    "CMD_RETURN_TO_OWNER": "回到主人身边",
+    "CMD_DROP_OBJECT": "吐掉",
+    "CMD_PLAY_DEAD": "装死",
+    "CMD_BRING_OBJECT": "拿来",
     "STARTED": "开始",
     "COMPLETED": "完成",
     "FAILED": "失败",
@@ -129,7 +141,16 @@ SELECT_OPTIONS: dict[str, tuple[str, ...]] = {
         "CMD_FOLLOW",
         "CMD_STOP",
         "CMD_LIE_DOWN",
+        "CMD_STAND_UP",
+        "CMD_WAIT",
+        "CMD_GIVE_PAW",
+        "CMD_HIGH_FIVE",
+        "CMD_ROLL_OVER",
         "CMD_SPIN",
+        "CMD_RETURN_TO_OWNER",
+        "CMD_DROP_OBJECT",
+        "CMD_PLAY_DEAD",
+        "CMD_BRING_OBJECT",
         "CMD_FETCH",
     ),
     "vision_events": (
@@ -310,11 +331,21 @@ class StatusWidgets:
             )
             chip_x += chip_w + chip_gap
 
-        right_text = f"事件 {state.processed_events}  队列 {state.queue_depth}"
+        time_text, time_color = _virtual_time_display(state)
         draw_text(
-            right_text,
+            time_text,
             config.WINDOW_WIDTH - 16,
-            config.TOP_BAR_TOP - 14,
+            config.TOP_BAR_TOP - 7,
+            time_color,
+            config.FONT_SIZE_BODY,
+            bold=True,
+            anchor_x="right",
+            anchor_y="top",
+        )
+        draw_text(
+            f"事件 {state.processed_events}  队列 {state.queue_depth}",
+            config.WINDOW_WIDTH - 16,
+            config.TOP_BAR_TOP - 25,
             config.COLORS["muted_text"],
             config.FONT_SIZE_AUX,
             anchor_x="right",
@@ -698,7 +729,20 @@ class StatusWidgets:
 
         draw_text("快捷指令", x, top, config.COLORS["muted_text"], config.FONT_SIZE_AUX, anchor_y="top")
         top -= 20
-        quick = (("坐下", "CMD_SIT"), ("过来", "CMD_COME_HERE"), ("握手", "CMD_HAND"), ("跟随", "CMD_FOLLOW"), ("停止", "CMD_STOP"))
+        quick = (
+            ("坐下", "CMD_SIT"),
+            ("过来", "CMD_COME_HERE"),
+            ("跟随", "CMD_FOLLOW"),
+            ("握手", "CMD_GIVE_PAW"),
+            ("翻滚", "CMD_ROLL_OVER"),
+            ("趴下", "CMD_LIE_DOWN"),
+            ("站起", "CMD_STAND_UP"),
+            ("击掌", "CMD_HIGH_FIVE"),
+            ("转圈", "CMD_SPIN"),
+            ("装死", "CMD_PLAY_DEAD"),
+            ("回来", "CMD_RETURN_TO_OWNER"),
+            ("停止", "CMD_STOP"),
+        )
         gap = 6
         cell_w = (width - gap * 2) / 3
         for index, (label, command_id) in enumerate(quick):
@@ -706,8 +750,19 @@ class StatusWidgets:
             col = index % 3
             bx = x + col * (cell_w + gap)
             by = top - row * (config.BUTTON_HEIGHT + 6) - config.BUTTON_HEIGHT
-            self._button(bx, by, cell_w, config.BUTTON_HEIGHT, label, "command_quick", secondary=True, command_id=command_id)
-        top -= 2 * (config.BUTTON_HEIGHT + 6) + 4
+            self._button(
+                bx,
+                by,
+                cell_w,
+                config.BUTTON_HEIGHT,
+                label,
+                "command_quick",
+                secondary=True,
+                command_id=command_id,
+                asr_text=label,
+            )
+        quick_rows = math.ceil(len(quick) / 3)
+        top -= quick_rows * (config.BUTTON_HEIGHT + 6) + 4
         top = self._draw_payload_preview(state, x, top, width, max_lines=3)
         return self._button_row(x, top, width, "发送指令", "send_command", primary=True)
 
@@ -794,17 +849,52 @@ class StatusWidgets:
             arcade.draw_lbwh_rectangle_filled(track_x, thumb_y, 2, thumb_h, config.COLORS["border_strong"])
 
     def _draw_scene_controls(self, state: SimState) -> None:
-        width = 62
-        x = config.WORLD_RIGHT - width - 16
+        fov_width = 62
+        x = config.WORLD_RIGHT - fov_width - 16
         y = config.WORLD_TOP - 33
         self._small_button(
             x,
             y,
-            width,
+            fov_width,
             24,
             "视野开" if state.ui_show_fov else "视野关",
             "toggle_fov",
             active=state.ui_show_fov,
+        )
+        user_width = 88
+        user_x = x - user_width - 8
+        self._button(
+            user_x,
+            y,
+            user_width,
+            24,
+            "删除人物" if state.ui_user_visible else "添加人物",
+            "toggle_virtual_user",
+            secondary=not state.ui_user_visible,
+            blue_active=state.ui_user_visible,
+        )
+        abnormal_width = 92
+        abnormal_x = user_x - abnormal_width - 8
+        self._button(
+            abnormal_x,
+            y,
+            abnormal_width,
+            24,
+            "解除异常" if state.ui_abnormal_simulation_active else "异常模拟",
+            "toggle_abnormal_simulation",
+            secondary=not state.ui_abnormal_simulation_active,
+            danger_active=state.ui_abnormal_simulation_active,
+        )
+        food_width = 68
+        self._button(
+            abnormal_x - food_width - 8,
+            y,
+            food_width,
+            24,
+            "移除" if state.ui_bowl_has_food else "放粮",
+            "toggle_bowl_food",
+            secondary=not state.ui_bowl_has_food,
+            blue_active=state.ui_bowl_has_food,
         )
 
     def _draw_current_behavior(self, state: SimState, x: float, top: float, width: float) -> float:
@@ -855,15 +945,33 @@ class StatusWidgets:
             anchor_y="center",
         )
         y -= 23
-        total = max(1, state.action_stage_total or 3)
-        active = max(1, min(total, state.action_stage_index or 1))
-        self._draw_step_strip(bar_x, y, bar_w, total, active, status_color)
+        total = max(0, state.action_stage_total)
+        if total:
+            active = max(1, min(total, state.action_stage_index or 1))
+            self._draw_step_strip(bar_x, y, bar_w, total, active, status_color)
+        else:
+            draw_text(
+                "等待 Stage 反馈",
+                bar_x,
+                y,
+                config.COLORS["subtle_text"],
+                config.FONT_SIZE_AUX,
+                anchor_y="top",
+            )
         y -= 24
 
+        visual = visual_for_action(state.action_current_action)
         rows = (
             ("阶段", f"{state.action_stage_index or '-'}/{state.action_stage_total or '-'} {state.action_stage_label}"),
             ("目标", state.action_target_label),
-            ("模式", f"{state.action_level} / {state.action_interaction_mode}"),
+            (
+                "2D展示",
+                (
+                    f"图片：{visual.pose}"
+                    if visual is not None
+                    else ("等待动作" if state.action_current_action in {"", "-"} else "仅文字")
+                ),
+            ),
             ("可中断", _interrupt_text(state.action_safe_to_interrupt, state.action_status)),
         )
         self._draw_key_value_grid(x + config.CARD_PADDING, y, bar_w, rows)
@@ -872,6 +980,7 @@ class StatusWidgets:
             detail_y = top - 224
             details = (
                 f"目标 ID {state.action_goal_id or '-'}",
+                f"按 goal_id 追踪 {len(state.action_executions)} 个执行",
                 f"来源 {state.action_source}  优先级 {state.action_priority_level if state.action_priority_level is not None else '-'}",
                 f"反馈 {state.action_message}",
                 f"结果 {state.action_result}  原因 {state.action_reason}",
@@ -974,7 +1083,7 @@ class StatusWidgets:
 
     def _draw_perception_card(self, state: SimState, x: float, top: float, width: float) -> float:
         collapsed = "perception" in state.ui_collapsed_cards
-        height = 42 if collapsed else 162
+        height = 42 if collapsed else 184
         self._card(x, top, width, height, "感知摘要", "perception", state)
         if collapsed:
             return top - height - config.CARD_GAP
@@ -990,6 +1099,7 @@ class StatusWidgets:
             f"置信度  {_dash(_round_value(confidence))}   姿态  {_dash(target.get('pose_state'))}",
             f"声音  {_dash(audio.get('event_type'))}   说话人  {_dash(audio.get('speaker_id'))}",
             f"最近事件  {_event_list(visual.get('events'))}",
+            f"语音识别  {voice_command_display(audio)}",
         )
         y = top - 41
         for index, line in enumerate(lines):
@@ -1231,6 +1341,59 @@ class StatusWidgets:
         pending = state.ui_pending_confirmation
         if not pending:
             return
+        if pending.get("kind") == "alert":
+            width = 350
+            height = 132
+            x = (config.WINDOW_WIDTH - width) / 2
+            top = (
+                (config.TOP_BAR_BOTTOM + config.BOTTOM_LOG_HEIGHT) / 2
+                + height / 2
+            )
+            arcade.draw_lbwh_rectangle_filled(
+                x,
+                top - height,
+                width,
+                height,
+                config.COLORS["modal_background"],
+            )
+            arcade.draw_lbwh_rectangle_outline(
+                x,
+                top - height,
+                width,
+                height,
+                config.COLORS["warning"],
+                2,
+            )
+            draw_text(
+                str(pending.get("title") or "提示"),
+                x + 18,
+                top - 18,
+                config.COLORS["warning"],
+                config.FONT_SIZE_MODULE,
+                bold=True,
+                anchor_y="top",
+            )
+            draw_text(
+                _truncate(
+                    str(pending.get("message") or "操作暂不可用"),
+                    48,
+                ),
+                x + 18,
+                top - 51,
+                config.COLORS["text"],
+                config.FONT_SIZE_BODY,
+                anchor_y="top",
+            )
+            self._button(
+                x + (width - 140) / 2,
+                top - 108,
+                140,
+                32,
+                "知道了",
+                "cancel_confirmation",
+                primary=True,
+            )
+            return
         width = 390
         height = 156
         x = (config.WINDOW_WIDTH - width) / 2
@@ -1407,9 +1570,17 @@ class StatusWidgets:
         primary: bool = False,
         secondary: bool = False,
         active: bool = False,
+        blue_active: bool = False,
+        danger_active: bool = False,
         **data: Any,
     ) -> None:
-        if primary:
+        if danger_active:
+            fill = config.COLORS["button_active_red"]
+            border = config.COLORS["button_active_red_border"]
+        elif blue_active:
+            fill = config.COLORS["button_active_blue"]
+            border = config.COLORS["button_active_blue_border"]
+        elif primary:
             fill = config.COLORS["accent_dim"]
             border = config.COLORS["accent"]
         elif active:
@@ -1420,7 +1591,16 @@ class StatusWidgets:
             border = config.COLORS["border_strong"] if secondary else config.COLORS["border"]
         arcade.draw_lbwh_rectangle_filled(x, y, width, height, fill)
         arcade.draw_lbwh_rectangle_outline(x, y, width, height, border, 1)
-        draw_text(label, x + width / 2, y + height / 2 + 6, config.COLORS["text"], config.FONT_SIZE_BODY, bold=primary, anchor_x="center", anchor_y="top")
+        draw_text(
+            label,
+            x + width / 2,
+            y + height / 2 + 6,
+            config.COLORS["text"],
+            config.FONT_SIZE_BODY,
+            bold=primary or blue_active or danger_active,
+            anchor_x="center",
+            anchor_y="top",
+        )
         self._hit(action, x, y, width, height, **data)
 
     def _small_button(self, x: float, y: float, width: float, height: float, label: str, action: str, active: bool = False) -> None:
@@ -1490,10 +1670,29 @@ def _endpoint_status(
     stats_items = [stats for stats in stats_items if stats is not None]
     latest = max((stats.last_received_at or 0.0 for stats in stats_items), default=0.0)
     count = sum(stats.count for stats in stats_items)
-    if label == "EXEC" and state.action_status == "running":
-        return "live", "Active", f"{state.active_behavior or '-'} / {state.action_current_action}"
+    external_count = sum(
+        state.ros_external_publisher_counts.get(topic, 0)
+        for topic in topics
+    )
+    publisher_nodes = sorted(
+        {
+            (
+                f"{endpoint.get('node_namespace') or '/'}"
+                f"{endpoint.get('node_name') or '?'}"
+            ).replace("//", "/")
+            for topic in topics
+            for endpoint in state.ros_external_publishers.get(topic, [])
+            if isinstance(endpoint, dict)
+        }
+    )
+    if external_count <= 0:
+        return "waiting", "Waiting", f"未发现外部 Publisher | {', '.join(topics)}"
     if not latest or not count:
-        return "waiting", "Waiting", ", ".join(topics)
+        detail = (
+            f"已发现 {external_count} 个外部 Publisher"
+            f" ({', '.join(publisher_nodes) or '-'})，尚未收到消息"
+        )
+        return "connected", "Connected", detail
     age = now - latest
     rate = max((_topic_rate(stats, now) for stats in stats_items), default=0.0)
     rate_text = (
@@ -1513,6 +1712,35 @@ def _endpoint_status(
     return "error", "Offline", detail
 
 
+def _virtual_time_display(state: SimState) -> tuple[str, tuple[int, int, int]]:
+    payload = state.simulation_time_state or {}
+    context = _dict(payload.get("timeContext"))
+    raw_datetime = str(context.get("virtualDateTime") or "").strip()
+    if not raw_datetime:
+        if state.ros_time_online:
+            return "虚拟时间  已连接，等待数据", config.COLORS["warning"]
+        return "虚拟时间  离线", config.COLORS["muted_text"]
+
+    try:
+        display_datetime = datetime.fromisoformat(raw_datetime).strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        display_datetime = raw_datetime.replace("T", " ")
+
+    base_scale = context.get("scale")
+    effective_scale = context.get("effectiveScale")
+    shown_scale = effective_scale if effective_scale is not None else base_scale
+    scale_text = f"  ×{_dash(shown_scale)}" if shown_scale is not None else ""
+    base_value = _to_float(base_scale)
+    effective_value = _to_float(effective_scale)
+    accelerated = (
+        effective_value is not None
+        and base_value is not None
+        and effective_value != base_value
+    )
+    color = config.COLORS["warning"] if accelerated else config.COLORS["success"]
+    return f"虚拟时间  {display_datetime}{scale_text}", color
+
+
 def _topic_rate(stats: Any, now: float, window_sec: float = 5.0) -> float:
     if stats is None:
         return 0.0
@@ -1526,6 +1754,7 @@ def _topic_rate(stats: Any, now: float, window_sec: float = 5.0) -> float:
 def _health_color(status: str) -> tuple[int, int, int]:
     return {
         "live": config.COLORS["success"],
+        "connected": config.COLORS["warning"],
         "stale": config.COLORS["warning"],
         "error": config.COLORS["error"],
     }.get(status, config.COLORS["waiting"])
@@ -1812,7 +2041,7 @@ def _round_value(value: Any) -> Any:
     numeric = _to_float(value)
     if numeric is None:
         return value
-    return int(numeric) if numeric.is_integer() else round(numeric, 1)
+    return int(numeric) if numeric.is_integer() else round(numeric, 2)
 
 
 def _to_float(value: Any) -> float | None:

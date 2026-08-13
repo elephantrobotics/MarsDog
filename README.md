@@ -328,14 +328,27 @@ uv run --no-sync python main.py
 
 ### 6.2 模式 B：仅可视化真实执行器
 
-连接真实 `marsdog_action_executor` 时，关闭本项目的 Action Server：
+本项目默认不创建 `/execute_behavior` Action Server，避免和真实
+`marsdog_action_executor` 抢占同一个接口。只有在明确需要虚拟 Server 联调时才开启：
 
 ```bash
-MARSDOG_SIM2D_ACTION_SERVER=0 \
+MARSDOG_SIM2D_ACTION_SERVER=1 \
 uv run --no-sync python main.py
 ```
 
-界面仍会订阅 `/debug/execute_behavior/*` 和兼容调试 Topic，并用真实反馈驱动状态面板和动画。
+默认模式只订阅 `/debug/execute_behavior/*`，用真实 Feedback 驱动状态面板和动画。
+
+页面每秒检查一次 ROS Graph，并且只把其他节点提供的 Publisher 视为后端在线：
+
+- `Waiting`：没有发现外部 Publisher；UI 保持离线演示模式，可使用按钮和键盘。
+- `Connected`：已发现外部 Publisher，但尚未收到消息。
+- 绿色频率：已经实际收到该系统发布的数据。
+
+检测到真实动作系统的调试 Publisher 后，UI 会停止本地自主玩耍并进入联调模式；
+手动按钮仍会发布事件，但动画由行为树和动作系统的
+`/debug/execute_behavior/feedback` 接管。动作系统退出后，UI 自动恢复离线演示模式。
+仅看到 Topic 名称不能证明对应系统已启动，因为订阅端以及 UI 自己的手动注入
+Publisher 也会让名称出现在 `ros2 topic list` 中。
 
 ### 6.3 模式 C：本地动画自测
 
@@ -347,14 +360,15 @@ uv run --no-sync python main.py
 | `F` | `seekFood` |
 | `S` | `sleepNow` |
 | `C` | `seekInteraction` |
-| `W` | `wagTailFast` |
-| `P` | `spinInCircle` |
-| `G` | `cleanSelf` |
-| `E` | `defecate` |
+| `W` | `expressJoyAlone` |
+| `P` | `spin_around` |
+| `G` | `lickPaws` |
+| `E` | `barkShortAlert`（当前契约中的排泄行为） |
 | `R` | `recharge` |
-| `H` | `hideAway` |
+| `H` | `expressFearAlone` |
 
-本地动画自测只验证渲染和房间移动，不代表行为树、Action Client 或取消链路正常。当前 `LocalVirtualRunner` 没有连接 UI `CMD_STOP` 的取消接口。
+本地键盘动画只验证渲染和房间移动，不属于主人下达的外部指令，因此不在
+`CMD_STOP` 的停止范围内。
 
 ## 7. ROS2 接口
 
@@ -366,9 +380,9 @@ uv run --no-sync python main.py
 |---|---|---|---|
 | `/perception/visual_event` | 订阅、可注入 | BEST_EFFORT, depth 5 | 人、手、动物、物体和视觉事件 |
 | `/perception/audio_event` | 订阅、可注入 | RELIABLE, depth 10 | 唤醒、声纹、ASR 和语音命令 |
-| `/internal_need/state` | 订阅、可模拟输出 | RELIABLE, depth 10 | 七类需求快照和睡眠状态 |
+| `/internal_need/state` | 订阅、可模拟输出 | BEST_EFFORT, depth 5 | 七类需求快照和睡眠状态 |
 | `/internal_need/signal_event` | 订阅、可注入 | RELIABLE, depth 10 | 需求等级变化事件 |
-| `/emotion/state` | 订阅、可模拟输出 | RELIABLE, depth 10 | 六类情绪、主导情绪和区间 |
+| `/emotion/state` | 订阅、可模拟输出 | BEST_EFFORT, depth 5 | 六类情绪、主导情绪和区间 |
 | `/emotion/signal_event` | 订阅、可注入 | RELIABLE, depth 10 | 情绪区间变化事件 |
 | `/behavior/result_event` | 订阅、可注入 | RELIABLE, depth 10 | 行为结果及需求/情绪结算输入 |
 | `/personality/state` | 订阅、可模拟输出 | RELIABLE, TRANSIENT_LOCAL, depth 1 | 性格 Profile、A/O/E/C 和系数 |
@@ -389,15 +403,9 @@ ros2 action send_goal \
   --feedback
 ```
 
-常见 behavior 包括：
-
-- `eatNormally`、`eatExcitedly`、`seekFood`。
-- `defecate`、`sleepNow`、`cleanSelf`、`recharge`。
-- `exploreRoom`、`inspectObject`。
-- `seekHumanInteraction`、`expressJoy`。
-- `CMD_SIT`、`CMD_HAND`、`CMD_FOLLOW` 等命令行为。
-
-旧名称通过可视化别名映射兼容，但真实执行器是否接受某个名称，应以其 behavior catalog 为准。
+页面只使用随项目打包的 `assets/config/behavior_tree_actions.yaml` 中 53 个
+大小写敏感的直接 behavior。每个 Stage 从 YAML 候选中选择一个精确 `ACT_*`，
+不再使用旧行为别名或按行为名猜测动作。
 
 ### 7.3 Action 调试 Topic
 
@@ -407,19 +415,7 @@ ros2 action send_goal \
 - `/debug/execute_behavior/feedback`
 - `/debug/execute_behavior/result`
 
-界面也会订阅兼容 Topic：
-
-- `/execute_behavior/goal`
-- `/execute_behavior/feedback`
-- `/execute_behavior/result`
-
-重复消息会自动过滤。虚拟 Server 默认只发布当前 `/debug/execute_behavior/*` Topic。如需同时发布旧兼容 Topic：
-
-```bash
-MARSDOG_LEGACY_DEBUG_TOPICS=1 uv run --no-sync python main.py
-```
-
-兼容环境变量 `MARSDOG_COMPAT_DEBUG_TOPICS=1` 也会开启相同行为。
+旧 `/execute_behavior/goal|feedback|result` 调试 Topic 已删除，不再订阅或发布。
 
 ## 8. 手动输入与事件注入
 
@@ -456,6 +452,22 @@ Need 注入会发布：
 - `/internal_need/state`
 - `/internal_need/signal_event`
 
+TRIGGERED/OVERFLOW 的手动需求会立即中断 UI 自主玩耍。UI 先等待真实行为树下发
+Goal；短暂等待后仍没有外部 Goal 时，以本地动画兜底展示：饥饿 `seekFood`、
+排泄 `barkShortAlert`、困倦 `sleepNow`、清洁 `lickPaws`、能量
+`recharge`、社交 `seekInteraction`、探索 `exploreRoom`。之后收到真实 Goal
+时，本地兜底立即停止并由动作系统 Feedback 接管。
+
+任一本地需求动作成功完成后，UI 只将本次手动注入的对应需求恢复到未触发值，然后
+重新检查右侧全部需求：全部低于触发条件时恢复自主玩耍；仍有任意需求处于
+TRIGGERED/OVERFLOW/CRITICAL 时继续禁止外部指令和自主玩耍。真实需求节点发布的
+权威状态不由这一本地恢复逻辑修改。
+
+饥饿的本地兜底是一个连续流程：先以
+`ACT_SNIFF_BOWL_AND_WAIT_FOR_FOOD` 到达食盆检查食物；空盆时保持等待，且不允许
+进入自主玩耍。点击“放粮”后立即切换到 `eatNormally`，依次展示 `prepare`、
+`eating`、`interaction`、`exit` 四个契约 Stage。
+
 #### Emotion
 
 | Emotion | NONE | LOW/NORMAL | MID | HIGH |
@@ -488,12 +500,52 @@ Personality 注入发布 `/personality/state` 快照，可编辑：
 - `CMD_FOLLOW`
 - `CMD_STOP`
 - `CMD_LIE_DOWN`
+- `CMD_STAND_UP`
+- `CMD_WAIT`
+- `CMD_GIVE_PAW`
+- `CMD_HIGH_FIVE`
+- `CMD_ROLL_OVER`
 - `CMD_SPIN`
+- `CMD_RETURN_TO_OWNER`
+- `CMD_DROP_OBJECT`
+- `CMD_PLAY_DEAD`
+- `CMD_BRING_OBJECT`
 - `CMD_FETCH`
 
-指令页签发布的是 `/perception/audio_event`，其中包含 `EVT_VOICE_COMMAND_KNOWN`、`command_id`、ASR 文本、说话人和置信度。
+指令页签发布 `/perception/audio_event`。UI 会将命令转换成行为树要求的完整事件名，
+例如 `CMD_SIT → EVT_VOICE_COMMAND_SIT`、`CMD_FOLLOW →
+EVT_VOICE_COMMAND_FOLLOW`、`CMD_STOP → EVT_VOICE_COMMAND_STOP`。
 
-重要：点击 `CMD_STOP` 只表示“向行为树注入停止语音事件”，它不会由 UI 直接取消当前 `/execute_behavior` Goal。完整停止链路应由行为树保存当前 Goal Handle，并调用 Action cancel；发送新的 `CMD_STOP` Goal 也不等于取消旧 Goal。
+UI 会把可执行的 ASR 文本、完整 `event_type` 或 `command_id` 解析为 17 个直接
+behavior（如 `sit_down`、`come_to_owner`、`follow_owner`、`give_paw`、
+`roll_over`）。若行为树在
+短暂等待窗口内下发正式 `/execute_behavior` Goal，则由 Action Feedback 驱动；
+否则 UI 启动同名本地动画作为独立展示兜底。
+
+虚拟人物存在时，坐下、趴下、站起、等待、握手、击掌、翻滚、转圈、装死、过来、
+回来等主人旁快捷行为会先以走路姿态平滑靠近人物，到达后才切换
+`current_action` 对应图片；已经在人物身旁时直接执行。这里不伪造新的 ACT 标签，
+移动目标由快捷 behavior 的主人上下文提供。靠近时长按狗狗到人物身旁的实际距离
+和固定步行速度计算，不使用单帧改坐标；本地兜底和外部 Action Feedback 使用相同
+规则。到达后最终姿态至少保留一个短展示周期，再允许进入自主玩耍。
+`emergency_stop` 必须立即生效，不会
+为了靠近主人而延迟；取物行为仍按其整体 `ACT_OBJECT_BRING/ACT_OBJECT_FETCH`
+路线展示。
+`CMD_FOLLOW` 或“跟着我、跟我走、跟上我”等 ASR 文本会启动持续跟随；拖动虚拟
+人物时，MarsDog 会平滑追踪人物的最新位置并保持随行距离。外部动作系统接管跟随
+时，UI 仍使用可拖动人物的实时坐标，避免旧目标坐标造成瞬移或抖动。
+事件页的已知语音指令和指令页的快捷指令在发布前都会检查虚拟人物；人物未添加时
+弹出“没有识别到主人”并阻止发布。所有主人旁快捷动作都使用人物实时位置，人物
+被拖动后不会退回初始锚点执行。
+内部需求始终优先于语音兜底动画；需求触发后，尚未开始的语音不会启动，正在运行的
+本地语音动画也会立即让出展示控制权。跟随开始及虚拟人物每次实际移动时都会重新
+计时；人物连续 30 秒没有移动时，UI 自动解除跟随并在没有内部需求时恢复自主玩耍。
+若计时期间出现内部需求，仍先执行内部需求；人物删除也会立即解除跟随。
+
+`CMD_STOP` 是控制指令，不作为普通姿态动画排队。没有内部需求时，UI 会立即停止
+当前语音/快捷指令的移动和动作，并忽略该旧 Goal 的迟到反馈；同时仍向行为树发布
+停止事件，由行为树负责取消真实 `/execute_behavior` Goal。内部需求正在执行时，
+UI 不发布手动停止事件，也不会取消需求动作，只清除暂停等待中的外部指令。
 
 ### 8.4 场景页签
 
@@ -529,25 +581,29 @@ Personality 注入发布 `/personality/state` 快照，可编辑：
 - 真正影响事件驱动行为树的通常是对应 `signal_event`。
 - 持久修改性格应使用 personality 节点提供的参数或服务接口。
 
-为了避免调试面板被自己的输出污染，界面不会把自身发布的 Need/Emotion state echo 当作真实引擎状态更新仪表；signal event 仍会正常进入 ROS2 链路。
+界面会读取自身发布的 Need/Emotion state echo，用于更新当前调试仪表和 UI
+抢占判断；这仍然只是 ROS2 快照，不会写入计算节点的内部变量。真实节点的下一次
+权威输出可以覆盖该快照。
 
 ## 10. 虚拟动作与场景表现
 
 ### 10.1 动作阶段
 
-虚拟执行器把 behavior 转换为位置、朝向、目标和 ACT。Feedback 以 10 Hz 更新。
+真实动作系统不会以 10 Hz 连续发送 Feedback，而是在每个 Stage 完成后发送一条。
+界面直接读取 `current_stage`，再根据
+`assets/config/behavior_tree_actions.yaml` 确定 Stage 序号和总数；收到 Goal 后、
+首条 Feedback 到达前显示“等待 Stage 反馈”，不会按 behavior 名猜测 ACT，也不会
+虚构 approach / interaction / settle 三阶段。
 
-若真实 Feedback 提供 `stage_index`、`stage_total` 和 `stage_label`，界面直接使用真实值；缺少这些字段时，界面会估算三阶段：
-
-1. approach
-2. interaction/action
-3. settle
+Goal、Feedback 和 Result 全部按 `goal_id` 关联。另一个 Goal 到达时先记录为
+pending，不会立即覆盖当前行为卡；只有较新的 Goal 收到首条 Feedback 后才切换
+当前卡片，旧 Goal 的迟到 Feedback 也不会把页面切回去。
 
 `safe_to_interrupt` 是执行器反馈出的当前可中断状态。界面只负责显示，不会因为字段变为 `true` 自动发起 cancel。
 
 ### 10.2 狗狗姿态
 
-场景包含六种透明背景小金毛素材：
+场景包含基础姿态、行为姿态和情绪待机姿态透明素材：
 
 - stand
 - walk
@@ -555,8 +611,25 @@ Personality 注入发布 `/personality/state` 快照，可编辑：
 - lie
 - play bow
 - raised paw
+- closed-eye sleep、self-groom、toilet squat、shake water、eat
+- joy belly-up、excited toy shake、anxiety cower、fear cover-eyes、curious paw
+- chew/carry food、scratch food、burp、lick lips/nose、carry bowl
+- scratch ground、rub body、scratch ear、stretch、yawn、sploot
+- crawl/roll/bounce/stretch/sit wake-up、lying bark/whine、head tilt
 
-渲染器根据当前 ACT 选择姿态。例如睡眠使用 lie，握手使用 raised paw，邀玩使用 play bow。素材位于 `marsdog_sim2d/assets/dog/`。
+渲染器只按 Feedback 中大小写敏感的完整 `current_action` 查找图片和移动规则。
+当前 YAML 的 188 个唯一动作中，可用现有素材明确表达的动作显示对应 2D 图片；
+目前 135 个动作有严格 2D 映射，其余 53 个动作在场景和“当前行为”卡中明确
+标为“仅文字展示”，不会静默换成语义相近的旧图片。素材位于
+`marsdog_sim2d/assets/dog/`。
+
+没有运行中的行为 Goal 且内部需求未触发时，UI 会根据
+`/emotion/state` 的 `dominantEmotion` 启动 YAML 中对应的
+`express*Alone` 直接行为。Calm 的自主玩耍循环包含
+`expressCalmAlone`、翻肚皮 `ACT_TRICK_ROLL_OVER` 和甩咬玩具
+`ACT_SHAKE_TOY`；其中移动动作会生成新的安全随机位置，三个动作均使用契约内
+精确 ACT 对应的 2D 图片。轮次之间等待随机 1–3 秒。内部需求、可执行语音和
+有效视觉事件都会中断该空闲循环，真实行为 Goal 始终拥有展示优先级。
 
 ### 10.3 室内底图与锚点
 
@@ -567,30 +640,132 @@ Personality 注入发布 `/personality/state` 快照，可编辑：
 
 场景对象坐标集中定义在 `config.DEFAULT_ROOM_OBJECTS`。食盆、狗窝、玩具、厕所、护理和充电行为使用同一组逻辑锚点，避免 UI 位置与虚拟执行器落点不一致。
 
-用户是稳定场景锚点：移动的视觉检测框只作为观察标记，不会让用户角色漂移。只有手动放置并发送新的 Human Vision 目标时，才会有意更新用户锚点。
+用户逻辑坐标仍是稳定场景锚点：移动的视觉检测框只作为观察标记，不会让用户角色漂移。
+
+### 10.4 虚拟人物控制
+
+中央场景右上角提供“添加人物 / 删除人物”按钮。人物默认不显示；点击“添加人物”
+后会在默认用户锚点生成透明 PNG 人物，按钮变为蓝色并显示“删除人物”。左键点击
+人物后开始跟随鼠标，再次左键点击人物会锁定在当前鼠标位置；后续每次左键点击
+人物都会在“跟随鼠标 / 锁定位置”之间循环切换。点击右键会停止移动并回到默认位置。
+点击指令页的“跟随”快捷按钮或识别到跟随语音后，MarsDog 会追踪人物移动。人物
+每次实际移动都会重置静止计时；连续停留 30 秒后自动解除跟随，人物仍保留在场景
+中，且只有在没有内部需求时才恢复自主玩耍。删除人物也会同时结束 UI 跟随展示，
+但不会修改 ROS2 Topic 或 Action 接口。
+
+### 10.5 虚拟放粮控制
+
+中央场景右上角提供“放粮 / 移除”按钮。食盆默认为空；点击“放粮”后，按钮变为
+蓝色并显示“移除”，食盆中同步显示虚拟狗粮。觅食行为仍会先走到食盆，只有到达后
+才检查粮食状态：有粮时进入进食动作，无粮时保持低头嗅闻并等待。等待期间点击
+“放粮”会从当前位置进入 `eatNormally` 的四阶段进食；点击“移除”则隐藏狗粮。
+四阶段进食成功后，本次 UI 手动注入的 Hunger 会恢复为 NORMAL，狗粮仍保留在
+食盆中，MarsDog 可以直接回到自主玩耍，不要求点击“移除”。真实内部需求节点的
+权威状态仍由该节点自行恢复，UI 不会覆盖它。食盆状态不改变行为树的需求优先级。
+
+### 10.6 联调进食握手
+
+UI 提供一个状态 Topic 和一个确认服务，避免动作系统仅因“已经走到食盆”就向内部
+需求反馈进食成功：
+
+```text
+状态 Topic: /ui/feeding/state
+消息类型:    std_msgs/msg/String
+发布频率:    10 Hz（RELIABLE + TRANSIENT_LOCAL）
+
+确认服务:    /ui/feeding/try_start_eating
+服务类型:    std_srvs/srv/Trigger
+```
+
+状态消息示例：
+
+```json
+{
+  "event_type": "FEEDING_STATE",
+  "sequence": 12,
+  "phase": "WAITING_FOR_FOOD",
+  "foodAvailable": false,
+  "dogAtBowl": true,
+  "waitingForFood": true,
+  "waitingForAuthorization": false,
+  "eatingAuthorized": false,
+  "activeGoalId": "food-goal-42",
+  "timestamp": 1785314000.0
+}
+```
+
+`phase` 可能为：
+
+- `EMPTY_BOWL`：空盆，狗尚未在盆边等待。
+- `FOOD_AVAILABLE`：已经放粮，但狗还没到食盆。
+- `WAITING_FOR_FOOD`：狗已到食盆，正在等待放粮。
+- `READY_TO_EAT`：狗已到食盆且有粮，可以请求开始进食。
+- `EATING_AUTHORIZED`：服务已确认允许动作系统开始进食。
+
+命令行检查：
+
+```bash
+ros2 topic echo /ui/feeding/state --field data
+ros2 service call /ui/feeding/try_start_eating std_srvs/srv/Trigger "{}"
+```
+
+动作系统应按以下顺序接入：
+
+1. 执行走向食盆动作，同时订阅 `/ui/feeding/state`。
+2. 到达后，若 `foodAvailable=false`，持续执行
+   `ACT_SNIFF_BOWL_AND_WAIT_FOR_FOOD`（或 YAML 中同类等待动作），不要返回进食成功，也不要通知内部需求减少
+   饥饿值。
+3. 收到 `dogAtBowl=true` 且 `foodAvailable=true` 后，调用
+   `/ui/feeding/try_start_eating`。即使 Topic 已显示有粮，也必须以本次服务响应为准，
+   以处理用户刚好移除狗粮的竞态。
+4. 只有服务返回 `success=true` 后，才启动真实的
+   `ACT_LICK_FOOD`、`ACT_LICK_AND_SWALLOW` 或
+   `ACT_CHEW_OR_CARRY_FOOD` 进食动作。
+5. 只有进食动作真正进入 `RUNNING/STARTED` 后，动作系统才通过现有反馈接口通知内部
+   需求模块开始减少饥饿值。走到食盆、等待放粮以及服务返回失败都不能减少饥饿值。
+
+服务失败响应的 `message` 是 JSON，`reason` 为：
+
+- `DOG_NOT_AT_BOWL`：UI 中狗还没有到达食盆交互点。
+- `NO_FOOD`：狗已到食盆，但当前没有放粮。
+
+服务成功时 `reason=EATING_AUTHORIZED`，UI 会解除嗅闻等待并允许动作系统的进食反馈
+驱动画面。本地键盘演示没有外部动作系统，因此在放粮后会由 UI 自动完成这一步。
+
+### 10.7 异常模拟的暂停与恢复
+
+点击“异常模拟”后，UI 会保存当前行为 Goal、Stage、动作图片、移动目标和插值进度，
+再切换为 `ACT_VOCAL_WHINE` 的趴下呜咽姿态。本地执行计划只暂停计时，不会被
+cancel；因此点击“解除异常”后会从原进度继续执行，异常持续时间不会消耗行为的
+剩余时长。饥饿等待、睡眠等内部需求流程同样保留。
+
+真实动作系统在异常期间仍可能继续发布 Feedback/Result。UI 会暂存这些消息，解除
+异常后按顺序恢复后续 Stage，避免旧行为消失或直接被自主玩耍覆盖。异常模拟本身
+不发布 ROS2 pause/cancel；解除后若有新的高优先级内部需求，仍按“内部需求 >
+外部指令 > 自主玩耍”重新仲裁。
 
 ## 11. Stop 与行为中断
 
-执行中的睡眠、进食或其他行为应通过 ROS2 Action cancel 中断：
+停止只针对主人下达的外部语音或快捷指令：
 
 ```text
 CMD_STOP
   -> Behavior Tree 识别停止命令
-  -> cancel 当前 /execute_behavior Goal
+  -> 若当前 Goal 来自外部指令，则 cancel 该 Goal
   -> Action Server 返回 CANCELED
-  -> Behavior Tree 发布 /behavior/result_event
-     ACTION_SLEEP + INTERRUPTED/CANCELLED
-  -> internal_need.sleep.isSleeping = false
+  -> UI 立即停止旧移动/姿态并恢复空闲调度
 ```
+
+若饥饿、排泄、困倦、清洁、能量、社交或探索需求正在执行，`CMD_STOP` 不得取消
+该需求 Goal。UI 左侧手动 Stop 会提示“内部需求正在执行，停止指令已忽略”且不发布；
+已经由其他语音节点发布的 Stop 也不会改变 UI 中的需求行为。
 
 排查原则：
 
-- 收到 `CMD_STOP` 但没有 Action `CANCELED`：行为树没有调用 cancel。
-- Action 已 `CANCELED`，但没有 `ACTION_SLEEP + INTERRUPTED/CANCELLED`：行为树缺少结果回传。
-- 两者都有，但 `sleep.isSleeping` 仍为 true：内部需求节点没有退出睡眠状态。
-- 使用键盘 `S` 启动的是本地动画自测，不经过行为树，当前不会被 UI Stop 取消。
-
-虚拟 Action Server 的 cancel callback 会接受取消请求，并在执行循环中返回 canceled；是否发起该请求属于 Action Client/行为树职责。
+- 外部指令收到 `CMD_STOP` 但真实 Action 没有 `CANCELED`：行为树没有调用 cancel。
+- 内部需求 Goal 被 Stop 取消：行为树的停止分支缺少“仅取消外部指令”来源判断。
+- UI 旧动作重新出现：检查动作系统是否为旧 Goal 复用了新的 `goal_id`。
+- 键盘 `S/F/G` 等是本地渲染自测，不属于外部指令，不受 Stop 控制。
 
 ## 12. 诊断命令
 
@@ -619,7 +794,7 @@ ros2 topic echo /debug/execute_behavior/result
 ros2 topic echo /behavior/result_event
 ```
 
-### 12.4 Stop 未打断睡眠
+### 12.4 验证 Stop 优先级
 
 依次确认：
 
@@ -630,7 +805,9 @@ ros2 topic echo /behavior/result_event
 ros2 topic echo /internal_need/state
 ```
 
-预期依次看到 `CMD_STOP`、睡眠 Goal 的 `CANCELED`、`ACTION_SLEEP` 的 `INTERRUPTED/CANCELLED`，最后 `sleep.isSleeping=false`。
+外部指令执行时，预期看到 `CMD_STOP` 后该外部 Goal 返回 `CANCELED`。内部需求执行
+时，UI 手动 Stop 不会发布；来自其他语音节点的 Stop 也不应令需求 Goal 返回
+`CANCELED`，需求状态应继续按正常完成流程更新。
 
 ## 13. 常见问题
 
@@ -708,8 +885,9 @@ uv run --no-sync python -m compileall -q marsdog_sim2d main.py
 - 虚拟移动是面向调试的视觉脚本，不替代机器人底盘控制。
 - 尚未调用 `/perception/perception_task` Service。
 - 手动状态发布不是需求、情绪或性格计算节点的持久写入接口。
-- UI `CMD_STOP` 不会直接调用 Action cancel；取消职责属于行为树/Action Client。
-- 本地快捷键动作不经过 ROS2 行为树，也不支持 UI Stop 中断。
+- UI 会立即终止外部指令的本地展示，但真实 Action cancel 仍由行为树/Action Client
+  负责。
+- 本地键盘动作不经过 ROS2 行为树，也不属于 UI Stop 的外部指令范围。
 - 真实执行器支持的 behavior、ACT 和中断规则应以其 catalog 与运行时 Feedback 为准。
 
 ## 16. 开发约束

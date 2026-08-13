@@ -4,7 +4,7 @@ from __future__ import annotations
 
 WINDOW_WIDTH = 1470
 WINDOW_HEIGHT = 820
-WINDOW_TITLE = "MarsDog 2D ROS2 Viewer"
+WINDOW_TITLE = "MarsDog 2D ROS2 Viewer v1.3"
 
 MIN_WINDOW_WIDTH = 1060
 MIN_WINDOW_HEIGHT = 680
@@ -53,6 +53,9 @@ DEFAULT_DOG_Y = 420.0
 DEFAULT_DOG_HEADING = 0.0
 DEFAULT_USER_X = 680.0
 DEFAULT_USER_Y = 405.0
+OWNER_NEAR_DISTANCE = 140.0
+OWNER_APPROACH_SPEED = 185.0
+OWNER_ACTION_HOLD_SEC = 1.0
 
 # Logical scene anchors matched to apartment_floorplan_source.png. Keep these
 # separate from responsive screen coordinates used by the Arcade layout.
@@ -70,6 +73,17 @@ MAX_STRUCTURED_EVENTS = 240
 MAX_VISIBLE_LOG_LINES = 8
 MAX_BEHAVIOR_RESULTS = 8
 QUEUE_DRAIN_LIMIT = 200
+
+# External Action feedback is often much slower than the Arcade render loop.
+# Interpolate each reported pose until the next expected sample so sparse ROS2
+# updates do not look like teleportation.
+MOTION_DEFAULT_SMOOTH_SEC = 0.18
+MOTION_MIN_SMOOTH_SEC = 1.0 / 120.0
+MOTION_MAX_SMOOTH_SEC = 1.2
+MOTION_FEEDBACK_PERIOD_SCALE = 1.05
+MOTION_POSITION_EPSILON = 0.5
+MOTION_HEADING_EPSILON = 0.5
+MOTION_VISUAL_SWITCH_DISTANCE = 5.0
 
 FONT_SIZE_PAGE = 19
 FONT_SIZE_MODULE = 14
@@ -103,6 +117,7 @@ STATUS_COMPACT_ROW_HEIGHT = 20
 PANEL_BORDER_WIDTH = 1
 
 TOPICS = {
+    "simulation_time_state": "/simulation/time_state",
     "visual_event": "/perception/visual_event",
     "audio_event": "/perception/audio_event",
     "internal_need_state": "/internal_need/state",
@@ -118,16 +133,21 @@ ACTION_DEBUG_PREFIX = "/debug/execute_behavior"
 ACTION_GOAL_TOPIC = f"{ACTION_DEBUG_PREFIX}/goal"
 ACTION_FEEDBACK_TOPIC = f"{ACTION_DEBUG_PREFIX}/feedback"
 ACTION_RESULT_TOPIC = f"{ACTION_DEBUG_PREFIX}/result"
-LEGACY_ACTION_GOAL_TOPIC = f"{ACTION_NAME}/goal"
-LEGACY_ACTION_FEEDBACK_TOPIC = f"{ACTION_NAME}/feedback"
-LEGACY_ACTION_RESULT_TOPIC = f"{ACTION_NAME}/result"
-ACTION_FEEDBACK_PERIOD_SEC = 0.1
+# The real executor reports once after each Stage; this short interval is used
+# only to notice cancellation while the optional local Action server waits.
+ACTION_CANCEL_POLL_PERIOD_SEC = 0.05
 VIEWER_SOURCE = "marsdog_sim2d_virtual_executor"
+ROS_GRAPH_STATUS_SOURCE = "rosgraph://marsdog_sim2d/external_publishers"
+
+FEEDING_STATE_TOPIC = "/ui/feeding/state"
+FEEDING_TRY_START_SERVICE = "/ui/feeding/try_start_eating"
+FEEDING_STATE_PUBLISH_PERIOD_SEC = 0.1
 
 VISUAL_TOPIC_DEPTH = 5
-STATE_TOPIC_DEPTH = 10
+STATE_TOPIC_DEPTH = 5
 EVENT_TOPIC_DEPTH = 10
 PERSONALITY_TOPIC_DEPTH = 1
+ROS_GRAPH_POLL_PERIOD_SEC = 1.0
 
 DEMAND_NAMES = (
     "Hunger",
@@ -204,6 +224,10 @@ COLORS = {
     "title": (158, 197, 183),
     "accent": (94, 174, 154),
     "accent_dim": (54, 101, 90),
+    "button_active_blue": (45, 112, 205),
+    "button_active_blue_border": (103, 169, 255),
+    "button_active_red": (154, 48, 55),
+    "button_active_red_border": (238, 111, 116),
     "need": (99, 143, 173),
     "emotion": (157, 122, 151),
     "dog_body": (181, 117, 73),
