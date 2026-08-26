@@ -141,42 +141,32 @@ def parse_internal_need_state(data: dict[str, Any]) -> SimEvent:
     demands = _normalize_named_state_map(raw_demands, config.DEMAND_NAMES)
     if not demands:
         demands = _normalize_top_level_states(source, config.DEMAND_NAMES)
-    payload = {
-        "schema_version": _first_present(
-            source.get("schema_version"),
-            source.get("schemaVersion"),
+    payload = {"schema_version": _first_present(
+        source.get("schema_version"),
+        source.get("schemaVersion"),
+    ), "timestamp": source.get("timestamp"), "event_type": _first_present(
+        source.get("event_type"),
+        source.get("eventType"),
+    ), "demands": demands, "levelEvents": _normalize_named_value_map(
+        _first_present(
+            source.get("levelEvents"),
+            source.get("level_events"),
         ),
-        "timestamp": source.get("timestamp"),
-        "event_type": _first_present(
-            source.get("event_type"),
-            source.get("eventType"),
-        ),
-        "demands": demands,
-        "levelEvents": _normalize_named_value_map(
-            _first_present(
-                source.get("levelEvents"),
-                source.get("level_events"),
-            ),
-            config.DEMAND_NAMES,
-        ),
-        "triggered": _first_present(
-            source.get("triggered"),
-            source.get("activeDemands"),
-            source.get("active_demands"),
-        ),
-        "sleep": _first_present(
-            source.get("sleep"),
-            source.get("sleepState"),
-            source.get("sleep_state"),
-        ),
-        "timeContext": _normalize_time_context(
-            _first_present(
-                source.get("timeContext"),
-                source.get("time_context"),
-            )
-        ),
-    }
-    payload["raw"] = data
+        config.DEMAND_NAMES,
+    ), "triggered": _first_present(
+        source.get("triggered"),
+        source.get("activeDemands"),
+        source.get("active_demands"),
+    ), "sleep": _first_present(
+        source.get("sleep"),
+        source.get("sleepState"),
+        source.get("sleep_state"),
+    ), "timeContext": _normalize_time_context(
+        _first_present(
+            source.get("timeContext"),
+            source.get("time_context"),
+        )
+    ), "raw": data}
     active = _active_names(payload.get("triggered"))
     summary = "need_state: " + (f"triggered={','.join(active)}" if active else "updated")
     return SimEvent(
@@ -204,63 +194,46 @@ def parse_internal_need_signal_event(data: dict[str, Any]) -> SimEvent:
         ),
         config.DEMAND_NAMES,
     )
-    payload = {
-        "schema_version": _first_present(
-            source.get("schema_version"),
-            source.get("schemaVersion"),
-        ),
-        "timestamp": source.get("timestamp"),
-        "event_type": _first_present(
-            source.get("event_type"),
-            source.get("eventType"),
-        ),
-        "demand": demand,
-        "value": _first_present(
-            source.get("value"),
-            source.get("currentValue"),
-            source.get("current_value"),
-        ),
-        "level": _first_present(
-            source.get("level"),
-            source.get("state"),
-        ),
-        "previousLevel": _first_present(
-            source.get("previousLevel"),
-            source.get("previous_level"),
-        ),
-        "triggerThreshold": _first_present(
-            source.get("triggerThreshold"),
-            source.get("trigger_threshold"),
-        ),
-        "triggerOperator": _first_present(
-            source.get("triggerOperator"),
-            source.get("trigger_operator"),
-        ),
-        "urgentThreshold": _first_present(
-            source.get("urgentThreshold"),
-            source.get("urgent_threshold"),
-        ),
-        "urgentOperator": _first_present(
-            source.get("urgentOperator"),
-            source.get("urgent_operator"),
-        ),
-        "overflowThreshold": _first_present(
-            source.get("overflowThreshold"),
-            source.get("overflow_threshold"),
-        ),
-        "overflowOperator": _first_present(
-            source.get("overflowOperator"),
-            source.get("overflow_operator"),
-        ),
-        "trigger": source.get("trigger"),
-        "timeContext": _normalize_time_context(
-            _first_present(
-                source.get("timeContext"),
-                source.get("time_context"),
-            )
-        ),
-    }
-    payload["raw"] = data
+    payload = {"schema_version": _first_present(
+        source.get("schema_version"),
+        source.get("schemaVersion"),
+    ), "timestamp": source.get("timestamp"), "event_type": _first_present(
+        source.get("event_type"),
+        source.get("eventType"),
+    ), "demand": demand, "value": _first_present(
+        source.get("value"),
+        source.get("currentValue"),
+        source.get("current_value"),
+    ), "level": _first_present(
+        source.get("level"),
+        source.get("state"),
+    ), "previousLevel": _first_present(
+        source.get("previousLevel"),
+        source.get("previous_level"),
+    ), "triggerThreshold": _first_present(
+        source.get("triggerThreshold"),
+        source.get("trigger_threshold"),
+    ), "triggerOperator": _first_present(
+        source.get("triggerOperator"),
+        source.get("trigger_operator"),
+    ), "urgentThreshold": _first_present(
+        source.get("urgentThreshold"),
+        source.get("urgent_threshold"),
+    ), "urgentOperator": _first_present(
+        source.get("urgentOperator"),
+        source.get("urgent_operator"),
+    ), "overflowThreshold": _first_present(
+        source.get("overflowThreshold"),
+        source.get("overflow_threshold"),
+    ), "overflowOperator": _first_present(
+        source.get("overflowOperator"),
+        source.get("overflow_operator"),
+    ), "trigger": source.get("trigger"), "timeContext": _normalize_time_context(
+        _first_present(
+            source.get("timeContext"),
+            source.get("time_context"),
+        )
+    ), "raw": data}
     summary = (
         f"need_signal: {payload.get('event_type') or 'unknown'} "
         f"demand={payload.get('demand') or '-'} "
@@ -500,9 +473,9 @@ def _first_present(*values: Any) -> Any:
 
 
 def _payload_object(
-    data: dict[str, Any],
-    *container_keys: str,
-    required_keys: tuple[str, ...],
+        data: dict[str, Any],
+        *container_keys: str,
+        required_keys: tuple[str, ...],
 ) -> dict[str, Any]:
     """Return a documented object or a common JSON envelope containing it."""
 
@@ -511,8 +484,8 @@ def _payload_object(
     for key in container_keys:
         candidate = data.get(key)
         if (
-            isinstance(candidate, dict)
-            and any(name in candidate for name in required_keys)
+                isinstance(candidate, dict)
+                and any(name in candidate for name in required_keys)
         ):
             return {**data, **candidate}
     return data
@@ -540,8 +513,8 @@ def _normalize_time_context(value: Any) -> dict[str, Any]:
 
 
 def _normalize_named_state_map(
-    value: Any,
-    canonical_names: tuple[str, ...],
+        value: Any,
+        canonical_names: tuple[str, ...],
 ) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     if isinstance(value, dict):
@@ -571,18 +544,18 @@ def _normalize_named_state_map(
 
 
 def _normalize_top_level_states(
-    source: dict[str, Any],
-    canonical_names: tuple[str, ...],
+        source: dict[str, Any],
+        canonical_names: tuple[str, ...],
 ) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for name in canonical_names:
         value = None
         for key in (
-            name,
-            name.lower(),
-            _camel_to_snake(name),
-            f"{name.lower()}Value",
-            f"{_camel_to_snake(name)}_value",
+                name,
+                name.lower(),
+                _camel_to_snake(name),
+                f"{name.lower()}Value",
+                f"{_camel_to_snake(name)}_value",
         ):
             if key in source:
                 value = source.get(key)
@@ -592,12 +565,10 @@ def _normalize_top_level_states(
     return normalized
 
 
-def _normalize_named_value_map(
-    value: Any,
-    canonical_names: tuple[str, ...],
-) -> dict[str, Any]:
+def _normalize_named_value_map(value: Any, canonical_names: tuple[str, ...]) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
+
     return {
         canonical: raw_value
         for raw_name, raw_value in value.items()
@@ -641,8 +612,8 @@ def _normalize_state_value(value: Any) -> Any:
 
 
 def _canonical_name(
-    value: Any,
-    canonical_names: tuple[str, ...],
+        value: Any,
+        canonical_names: tuple[str, ...],
 ) -> str | None:
     if value is None:
         return None

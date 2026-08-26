@@ -60,8 +60,24 @@ class EmotionIdleBehaviorTests(unittest.TestCase):
             set(EMOTION_IDLE_BEHAVIORS),
         )
         contract_names = set(direct_behavior_names())
-        for behavior_name, _duration in EMOTION_IDLE_BEHAVIORS.values():
+        for (
+            behavior_name,
+            _duration,
+            _preferred_action,
+        ) in EMOTION_IDLE_BEHAVIORS.values():
             self.assertIn(behavior_name, contract_names)
+
+    def test_joy_starts_emotion_idle_behavior(self) -> None:
+        harness = self._window_harness()
+        harness.sim_state.emotion_state = {"dominantEmotion": "Joy"}
+
+        SimWindow._maybe_start_emotion_idle(harness)
+
+        self.assertIsNotNone(harness.local_runner.plan)
+        self.assertEqual(
+            "expressJoyAlone",
+            harness.local_runner.plan.behavior_name,
+        )
 
     def test_calm_cycle_uses_contract_instead_of_removed_ui_behaviors(self) -> None:
         self.assertEqual(

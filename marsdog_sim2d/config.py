@@ -6,6 +6,12 @@ WINDOW_WIDTH = 1470
 WINDOW_HEIGHT = 820
 WINDOW_TITLE = "MarsDog 2D ROS2 Viewer v1.3"
 
+STARTUP_ANIMATION_DURATION_SEC = 1.8
+STARTUP_ANIMATION_FADE_OUT_SEC = 0.45
+STARTUP_MARK_RADIUS = 38.0
+STARTUP_ORBIT_RADIUS = 58.0
+STARTUP_TITLE_FONT_SIZE = 30
+
 MIN_WINDOW_WIDTH = 1060
 MIN_WINDOW_HEIGHT = 680
 TOP_BAR_HEIGHT = 44
@@ -56,6 +62,10 @@ DEFAULT_USER_Y = 405.0
 OWNER_NEAR_DISTANCE = 140.0
 OWNER_APPROACH_SPEED = 185.0
 OWNER_ACTION_HOLD_SEC = 1.0
+FOOD_BOWL_TEXTURE_WIDTH = 68.0
+FOOD_BOWL_TEXTURE_HEIGHT = 68.0
+TOILET_PAD_TEXTURE_WIDTH = 80.0
+TOILET_PAD_TEXTURE_HEIGHT = 59.3
 
 # Logical scene anchors matched to apartment_floorplan_source.png. Keep these
 # separate from responsive screen coordinates used by the Arcade layout.
@@ -106,6 +116,7 @@ CARD_GAP = 8
 CONTROL_HEIGHT = 30
 BUTTON_HEIGHT = 30
 TAB_HEIGHT = 32
+MAX_PAYLOAD_PREVIEW_CHARS = 20_000
 FORM_LABEL_HEIGHT = 24
 FORM_ROW_GAP = 8
 RADIO_OPTION_HEIGHT = 22
@@ -298,6 +309,11 @@ def update_layout(
     EVENT_PANEL_RIGHT = LEFT_PANEL_RIGHT
     EVENT_PANEL_WIDTH = LEFT_PANEL_WIDTH
     SIDE_PANEL_WIDTH = LEFT_PANEL_WIDTH + RIGHT_PANEL_WIDTH
+
+
+def scene_header_width() -> float:
+    """Return the responsive width reserved for the scene header."""
+    return min(330.0, max(230.0, WORLD_WIDTH * 0.38))
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:

@@ -13,7 +13,7 @@ from marsdog_sim2d.behavior_contract import (
     stage_position,
 )
 from marsdog_sim2d.event_injector import build_custom_injection_command
-from marsdog_sim2d.renderer import _dog_pose_for_action
+from marsdog_sim2d.views.renderer import _dog_pose_for_action
 from marsdog_sim2d.sim_state import SimEvent, SimState
 from marsdog_sim2d.virtual_executor import VirtualRoom
 from marsdog_sim2d.voice_commands import resolve_voice_command
@@ -22,7 +22,7 @@ from marsdog_sim2d.voice_commands import resolve_voice_command
 class BehaviorContractTests(unittest.TestCase):
     def test_packaged_yaml_is_the_complete_runtime_contract(self) -> None:
         self.assertEqual(53, len(direct_behavior_names()))
-        self.assertEqual(188, len(contract_action_ids()))
+        self.assertEqual(189, len(contract_action_ids()))
         self.assertEqual(
             (1, 4),
             stage_position("eatNormally", "prepare"),
@@ -84,7 +84,7 @@ class ExactActionPresentationTests(unittest.TestCase):
             "ACT_BURP": "burp",
             "ACT_LICK_LIPS_OR_NOSE": "lick_lips_nose",
             "ACT_CARRY_BOWL_AND_FOLLOW_OWNER": "carry_bowl",
-            "ACT_SCRATCH_SOIL_OR_GROUND": "scratch_ground",
+            "ACT_SCRATCH_SOIL_OR_GROUND": "scratch_ground_leave",
             "ACT_RUB_BODY_AGAINST_OBJECT": "body_rub_object",
             "ACT_SCRATCH_EAR_WITH_HIND_LEG": "scratch_ear",
             "ACT_STRETCH_BODY": "stretch",

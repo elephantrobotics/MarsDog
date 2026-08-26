@@ -13,24 +13,26 @@ import time
 from typing import Sequence
 
 import arcade
+import arcade.gui
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 
 from . import config
+from .components.drawing import draw_text
 from .event_injector import (
     InjectionCommand,
     MANUAL_SOURCE,
     build_custom_injection_command,
     build_scenario_command,
+    command_from_payload_preview,
     default_field_values,
-    field_max_chars,
-    next_field_id,
     place_injection_command,
     resolve_emotion_output,
     resolve_need_output,
 )
 from .feeding_interface import FeedingCoordinator
-from .renderer import WorldRenderer
+from marsdog_sim2d.views.left_panel import LeftControlPanel
+from marsdog_sim2d.views.renderer import WorldRenderer
 from .ros_bridge import RosBridge
 from .sim_state import SimEvent, SimState
 from .virtual_executor import LocalVirtualRunner
@@ -39,17 +41,17 @@ from .voice_commands import (
     is_external_command_behavior,
     resolve_voice_command,
 )
-from .widgets import StatusWidgets
+from marsdog_sim2d.views.widgets import StatusWidgets
 
 LOGGER = logging.getLogger("marsdog_sim2d")
 
 EMOTION_IDLE_BEHAVIORS = {
-    "CALM": ("expressCalmAlone", 4.5),
-    "JOY": ("expressJoyAlone", 3.2),
-    "EXCITE": ("expressExcitementAlone", 3.8),
-    "ANXIETY": ("expressAnxietyAlone", 3.2),
-    "FEAR": ("expressFearAlone", 3.2),
-    "CURIOUS": ("expressCuriosityAlone", 3.6),
+    "CALM": ("expressCalmAlone", 4.5, None),
+    "JOY": ("expressJoyAlone", 3.2, None),
+    "EXCITE": ("expressExcitementAlone", 3.8, None),
+    "ANXIETY": ("expressAnxietyAlone", 3.2, None),
+    "FEAR": ("expressFearAlone", 3.2, None),
+    "CURIOUS": ("expressCuriosityAlone", 3.6, None),
 }
 CALM_IDLE_SEQUENCE = (
     ("expressCalmAlone", 4.5, None),
@@ -129,13 +131,24 @@ class SimWindow(arcade.Window):
             config.WINDOW_HEIGHT,
             config.WINDOW_TITLE,
             resizable=True,
+            visible=False,
         )
         self.set_minimum_size(config.MIN_WINDOW_WIDTH, config.MIN_WINDOW_HEIGHT)
+        self._startup_elapsed_sec = 0.0
+        self._startup_frame_drawn = False
+        self._startup_frame_presented = False
+        arcade.set_background_color(config.COLORS["background"])
+
         self.sim_state = sim_state
         self.event_queue = event_queue
         self.injection_queue = injection_queue
-        self.renderer = WorldRenderer()
-        self.widgets = StatusWidgets()
+        self.ui_manager = arcade.gui.UIManager(self)
+        self.renderer: WorldRenderer | None = None
+        self.widgets = StatusWidgets(
+            self.ui_manager,
+            self._handle_event_detail_action,
+            self._handle_confirmation_action,
+        )
         self.local_runner = LocalVirtualRunner()
         self.feeding_coordinator = (
             feeding_coordinator or FeedingCoordinator()
@@ -165,19 +178,30 @@ class SimWindow(arcade.Window):
             self.sim_state.ui_log_height,
         )
         self._refresh_payload_preview()
-        arcade.set_background_color(config.COLORS["background"])
+        self.left_panel = LeftControlPanel(
+            self,
+            self.sim_state,
+            self._handle_left_panel_action,
+            manager=self.ui_manager,
+        )
+        self.set_visible(True)
 
     def on_update(self, delta_time: float) -> None:
+        if self.renderer is None:
+            if self._startup_frame_presented:
+                self.renderer = WorldRenderer()
+            return
+
+        self._advance_startup_animation(delta_time)
         self.sim_state.drain_queue(self.event_queue)
         self._sync_feeding_interface()
         if self.sim_state.ui_abnormal_simulation_active:
             return
+
         self._replay_deferred_abnormal_event()
-        if (
-            self.sim_state.ui_food_eating_until > 0.0
-            and time.monotonic() >= self.sim_state.ui_food_eating_until
-        ):
+        if 0.0 < self.sim_state.ui_food_eating_until <= time.monotonic():
             self.sim_state.finish_food_eating_display()
+
         if (
             self.sim_state.action_status == "running"
             and _state_is_follow_action(self.sim_state)
@@ -187,6 +211,7 @@ class SimWindow(arcade.Window):
             self.sim_state.ui_follow_user_active = True
             self.sim_state.ui_user_visible = True
             self.sim_state.ui_follow_goal_id = self.sim_state.action_goal_id
+
         self._capture_latest_visual_activity()
         self._capture_latest_voice_command()
         self._expire_stationary_follow_if_needed()
@@ -196,8 +221,10 @@ class SimWindow(arcade.Window):
         self._yield_local_need_to_external_action()
         self._maybe_start_manual_need()
         self._maybe_start_voice_command()
+
         for event in self.local_runner.update(self.sim_state):
             self.sim_state.apply_event(event)
+
         self._advance_manual_need_completion()
         self.sim_state.advance_virtual_motion(delta_time)
         self._advance_external_virtual_user_follow(delta_time)
@@ -221,6 +248,13 @@ class SimWindow(arcade.Window):
         self._sync_feeding_interface()
 
     def on_draw(self) -> None:
+        renderer = self.renderer
+        if renderer is None:
+            self.clear()
+            self._draw_startup_overlay()
+            self._startup_frame_drawn = True
+            return
+
         config.update_layout(
             self.width,
             self.height,
@@ -228,8 +262,106 @@ class SimWindow(arcade.Window):
             self.sim_state.ui_log_height,
         )
         self.clear()
-        self.renderer.draw(self.sim_state)
+        renderer.draw(self.sim_state)
+        draw_native_gui = self.left_panel.sync()
         self.widgets.draw(self.sim_state)
+        if draw_native_gui:
+            self.ui_manager.draw()
+        if self._startup_animation_active():
+            self._draw_startup_overlay()
+
+    def flip(self) -> None:
+        """Record when the event loop has actually presented the startup frame."""
+        super().flip()
+        if getattr(self, "_startup_frame_drawn", False) and getattr(self, "renderer", None) is None:
+            self._startup_frame_presented = True
+
+    def _startup_animation_active(self) -> bool:
+        return self.renderer is None or self._startup_elapsed_sec < config.STARTUP_ANIMATION_DURATION_SEC
+
+    def _advance_startup_animation(self, delta_time: float) -> None:
+        if not self._startup_animation_active():
+            return
+
+        self._startup_elapsed_sec = min(config.STARTUP_ANIMATION_DURATION_SEC, self._startup_elapsed_sec + max(0.0, delta_time))
+        if not self._startup_animation_active():
+            self.ui_manager.enable()
+
+    def _finish_startup_animation(self) -> None:
+        if not self._startup_animation_active():
+            return
+
+        self._startup_elapsed_sec = config.STARTUP_ANIMATION_DURATION_SEC
+        self.ui_manager.enable()
+
+    def _draw_startup_overlay(self) -> None:
+        alpha = _startup_overlay_alpha(self._startup_elapsed_sec)
+        center_x = self.width / 2
+        center_y = self.height / 2 + config.SPACE_LG
+        pulse = 1.0 + math.sin(self._startup_elapsed_sec * 6.0) * 0.08
+        orbit_angle = self._startup_elapsed_sec * math.tau
+        orbit_x = center_x + math.cos(orbit_angle) * config.STARTUP_ORBIT_RADIUS
+        orbit_y = center_y + math.sin(orbit_angle) * config.STARTUP_ORBIT_RADIUS
+
+        arcade.draw_lbwh_rectangle_filled(
+            0,
+            0,
+            self.width,
+            self.height,
+            (*config.COLORS["background"], alpha),
+        )
+        arcade.draw_circle_outline(
+            center_x,
+            center_y,
+            config.STARTUP_ORBIT_RADIUS,
+            (*config.COLORS["accent_dim"], alpha),
+            config.PANEL_BORDER_WIDTH,
+        )
+        arcade.draw_circle_filled(
+            center_x,
+            center_y,
+            config.STARTUP_MARK_RADIUS * pulse,
+            (*config.COLORS["accent"], alpha),
+        )
+        arcade.draw_circle_filled(
+            orbit_x,
+            orbit_y,
+            config.SPACE_XS,
+            (*config.COLORS["title"], alpha),
+        )
+        draw_text(
+            "MD",
+            center_x,
+            center_y,
+            (*config.COLORS["background"], alpha),
+            config.FONT_SIZE_PAGE,
+            bold=True,
+            anchor_x="center",
+            anchor_y="center",
+        )
+        draw_text(
+            "MarsDog",
+            center_x,
+            center_y - config.STARTUP_ORBIT_RADIUS - config.SPACE_LG,
+            (*config.COLORS["text"], alpha),
+            config.STARTUP_TITLE_FONT_SIZE,
+            bold=True,
+            anchor_x="center",
+            anchor_y="top",
+        )
+        draw_text(
+            "MarsDog 2D Bionic Platform",
+            center_x,
+            center_y - 33
+            - config.STARTUP_ORBIT_RADIUS
+            - config.SPACE_LG
+            - config.STARTUP_TITLE_FONT_SIZE
+            - config.SPACE_SM,
+            (*config.COLORS["muted_text"], alpha),
+            config.FONT_SIZE_BODY,
+            anchor_x="center",
+            anchor_y="top",
+        )
 
     def on_resize(self, width: int, height: int) -> None:
         super().on_resize(width, height)
@@ -239,17 +371,29 @@ class SimWindow(arcade.Window):
             self.sim_state.ui_left_collapsed,
             self.sim_state.ui_log_height,
         )
+        if hasattr(self, "left_panel"):
+            self.left_panel.request_rebuild()
+
+    def on_close(self) -> None:
+        self.left_panel.close()
+        super().on_close()
 
     def on_key_press(self, symbol: int, modifiers: int) -> None:
         del modifiers
+        if self._startup_animation_active():
+            if symbol == arcade.key.ESCAPE:
+                self._finish_startup_animation()
+            return
+        if self.sim_state.ui_payload_preview_expanded:
+            if symbol == arcade.key.ESCAPE:
+                self.sim_state.ui_payload_preview_expanded = False
+                self.sim_state.ui_payload_preview_scroll = 0
+            return
         if self.sim_state.ui_pending_confirmation:
             if symbol == arcade.key.ESCAPE:
                 self.sim_state.ui_pending_confirmation = None
             elif symbol in {arcade.key.ENTER, getattr(arcade.key, "NUM_ENTER", arcade.key.ENTER)}:
                 self._confirm_pending_action()
-            return
-        if symbol == arcade.key.ESCAPE and self.sim_state.ui_open_select:
-            self.sim_state.ui_open_select = None
             return
         if self._handle_injector_key(symbol):
             return
@@ -275,40 +419,48 @@ class SimWindow(arcade.Window):
             self._start_local_behavior("expressFearAlone")
 
     def on_text(self, text: str) -> None:
+        if self._startup_animation_active():
+            return
+
         field_id = self.sim_state.ui_text_focus
         if not field_id or not text:
             return
+
         if field_id == "log_search":
             self.sim_state.ui_log_search = (self.sim_state.ui_log_search + text)[:80]
-            return
-        value = self.sim_state.event_injector_fields.get(field_id, "")
-        max_chars = field_max_chars(field_id)
-        self.sim_state.event_injector_fields[field_id] = (value + text)[:max_chars]
-        self._refresh_payload_preview()
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float) -> None:
         del dx, dy
+        if self._startup_animation_active():
+            return
+
         if self.sim_state.ui_dragging_user and self.sim_state.ui_user_visible:
             _move_virtual_user_from_screen(self.sim_state, x, y)
+
+        hovered_item = self.widgets.hit_test(x, y)
+        if hasattr(self, "left_panel"):
+            self.left_panel.update_mouse_cursor(x, y, "hand" if hovered_item else "default")
+
         self.widgets.set_hover(x, y)
 
-    def on_mouse_press(
-        self,
-        x: float,
-        y: float,
-        button: int,
-        modifiers: int,
-    ) -> None:
+    def on_mouse_press(self, x: float, y: float, button: int, modifiers: int) -> None:
         del modifiers
+        if self._startup_animation_active():
+            return
+
+        if self.sim_state.ui_payload_preview_expanded:
+            return
+
         if button == arcade.MOUSE_BUTTON_RIGHT:
             if self.sim_state.ui_user_visible:
                 _reset_virtual_user(self.sim_state)
             return
+
         if button != arcade.MOUSE_BUTTON_LEFT:
             return
+
         item = self.widgets.hit_test(x, y)
         if item is None:
-            self.sim_state.ui_open_select = None
             self.sim_state.ui_text_focus = None
             if self._point_in_world(x, y):
                 if self.sim_state.ui_pending_placement:
@@ -325,82 +477,18 @@ class SimWindow(arcade.Window):
                             )
                         _toggle_virtual_user_motion(self.sim_state)
             return
+
         action = str(item["action"])
-        if self.sim_state.ui_pending_confirmation and action not in {
-            "cancel_confirmation",
-            "confirm_action",
-        }:
+        if self.sim_state.ui_pending_confirmation and action not in {"cancel_confirmation", "confirm_action"}:
             return
-        if action == "collapse_left":
-            self.sim_state.ui_left_collapsed = True
-            self.sim_state.ui_open_select = None
-            config.update_layout(self.width, self.height, True, self.sim_state.ui_log_height)
+
+        if self._handle_left_panel_action(item):
             return
-        if action == "expand_left":
-            self.sim_state.ui_left_collapsed = False
-            config.update_layout(self.width, self.height, False, self.sim_state.ui_log_height)
-            return
-        if action in {"input_tab", "collapsed_tab"}:
-            self.sim_state.ui_input_tab = str(item["tab"])
-            self.sim_state.ui_left_scroll = 0.0
-            if action == "collapsed_tab":
-                self.sim_state.ui_left_collapsed = False
-            self.sim_state.ui_open_select = None
-            self.sim_state.ui_text_focus = None
-            self._normalize_group_for_tab()
-            self._refresh_payload_preview()
-            return
-        if action == "select_toggle":
-            select_id = str(item["select_id"])
-            self.sim_state.ui_open_select = (
-                None if self.sim_state.ui_open_select == select_id else select_id
-            )
-            self.sim_state.ui_text_focus = None
-            return
-        if action == "select_option":
-            self._apply_select_option(item)
-            return
-        if action == "focus_input":
-            field_id = str(item["field_id"])
-            self.sim_state.ui_text_focus = field_id
-            self.sim_state.event_injector_focused_field = field_id
-            self.sim_state.ui_open_select = None
-            return
+
         if action == "focus_log_search":
             self.sim_state.ui_text_focus = "log_search"
-            self.sim_state.ui_open_select = None
             return
-        if action == "placement_mode":
-            group = str(item["group"])
-            if self.sim_state.ui_pending_placement and self.sim_state.ui_pending_placement.get("group") == group:
-                self.sim_state.ui_pending_placement = None
-            else:
-                self.sim_state.ui_pending_placement = {
-                    "group": group,
-                    "kind": self._placement_kind(group),
-                    "x": None,
-                    "y": None,
-                }
-            self._refresh_payload_preview()
-            return
-        if action in {"send_event", "send_command"}:
-            self._send_custom_injection("Audio" if action == "send_command" else None)
-            return
-        if action == "command_quick":
-            self.sim_state.event_injector_fields["audio_command_id"] = str(item["command_id"])
-            self.sim_state.event_injector_fields["audio_asr_text"] = str(
-                item.get("asr_text") or ""
-            )
-            self.sim_state.event_injector_fields["audio_event_type"] = "EVT_VOICE_COMMAND_KNOWN"
-            self._refresh_payload_preview()
-            self._send_custom_injection("Audio")
-            return
-        if action == "publish_state_output":
-            self._request_state_output()
-            return
-        if action == "scenario":
-            self._request_scenario(str(item["scenario_id"]))
-            return
+
         if action == "toggle_card":
             card_id = str(item["card_id"])
             if card_id in self.sim_state.ui_collapsed_cards:
@@ -408,24 +496,30 @@ class SimWindow(arcade.Window):
             else:
                 self.sim_state.ui_collapsed_cards.add(card_id)
             return
+
         if action == "behavior_context":
             self.sim_state.ui_behavior_context_expanded = bool(item["expanded"])
             return
+
         if action == "toggle_fov":
             self.sim_state.ui_show_fov = not self.sim_state.ui_show_fov
             return
+
         if action == "toggle_virtual_user":
             was_visible = self.sim_state.ui_user_visible
             _toggle_virtual_user(self.sim_state)
             if was_visible and not self.sim_state.ui_user_visible:
                 self._stop_virtual_user_follow("Virtual person removed from UI")
             return
+
         if action == "toggle_abnormal_simulation":
             self._toggle_abnormal_simulation()
             return
+
         if action == "toggle_bowl_food":
             self._toggle_bowl_food()
             return
+
         if action == "toggle_log_filter":
             source = str(item["source"])
             if source in self.sim_state.ui_log_filters:
@@ -433,6 +527,7 @@ class SimWindow(arcade.Window):
             else:
                 self.sim_state.ui_log_filters.add(source)
             return
+
         if action == "toggle_log_pause":
             self.sim_state.ui_log_paused = not self.sim_state.ui_log_paused
             self.sim_state.ui_log_pause_snapshot = (
@@ -441,36 +536,157 @@ class SimWindow(arcade.Window):
                 else []
             )
             return
+
         if action == "toggle_log_auto":
             self.sim_state.ui_log_auto_scroll = not self.sim_state.ui_log_auto_scroll
             return
+
         if action == "clear_log":
             self.sim_state.event_records.clear()
             self.sim_state.event_log.clear()
             self.sim_state.ui_selected_event_id = None
             self.sim_state.ui_log_pause_snapshot = []
             return
+
         if action == "select_event":
             self.sim_state.ui_selected_event_id = int(item["event_id"])
             self.sim_state.ui_selected_object = None
             return
-        if action == "close_event_detail":
-            self.sim_state.ui_selected_event_id = None
+
+        if self._handle_event_detail_action(action):
             return
-        if action == "copy_event_payload":
-            self._copy_selected_payload()
-            return
+
         if action == "close_object_detail":
             self.sim_state.ui_selected_object = None
             return
+
         if action == "log_resize":
             self.sim_state.ui_dragging_log = True
             return
+
+        if self._handle_confirmation_action(action):
+            return
+
+    def _handle_event_detail_action(self, action: str) -> bool:
+        """Apply an action emitted by the native event-detail buttons."""
+        if action == "close_event_detail":
+            self.sim_state.ui_selected_event_id = None
+            return True
+
+        if action == "copy_event_payload":
+            self._copy_selected_payload()
+            return True
+
+        return False
+
+    def _handle_confirmation_action(self, action: str) -> bool:
+        """Apply an action emitted by the native confirmation dialog."""
         if action == "cancel_confirmation":
             self.sim_state.ui_pending_confirmation = None
-            return
+            return True
+
         if action == "confirm_action":
             self._confirm_pending_action()
+            return True
+
+        return False
+
+    def _handle_left_panel_action(self, item: dict[str, object]) -> bool:
+        """Apply an action emitted by the native left control panel."""
+        action = str(item.get("action") or "")
+        if action == "collapse_left":
+            self.sim_state.ui_left_collapsed = True
+            config.update_layout(
+                self.width,
+                self.height,
+                True,
+                self.sim_state.ui_log_height,
+            )
+            return True
+
+        if action == "expand_left":
+            self.sim_state.ui_left_collapsed = False
+            config.update_layout(
+                self.width,
+                self.height,
+                False,
+                self.sim_state.ui_log_height,
+            )
+            return True
+
+        if action in {"input_tab", "collapsed_tab"}:
+            self.sim_state.ui_input_tab = str(item["tab"])
+            if action == "collapsed_tab":
+                self.sim_state.ui_left_collapsed = False
+            self._normalize_group_for_tab()
+            self._refresh_payload_preview()
+            return True
+
+        if action == "select_option":
+            self._apply_select_option(item)
+            return True
+
+        if action == "field_changed":
+            self._refresh_payload_preview()
+            return True
+
+        if action == "show_payload_preview":
+            self.sim_state.ui_payload_preview_expanded = True
+            self.sim_state.ui_text_focus = None
+            return True
+
+        if action == "close_payload_preview":
+            self.sim_state.ui_payload_preview_expanded = False
+            return True
+
+        if action == "placement_mode":
+            group = str(item["group"])
+            if group == "Audio":
+                self.sim_state.ui_input_tab = "Event"
+                self.sim_state.event_injector_group = "Audio"
+
+            pending = self.sim_state.ui_pending_placement
+            if pending and pending.get("group") == group:
+                self.sim_state.ui_pending_placement = None
+            else:
+                self.sim_state.ui_pending_placement = {
+                    "group": group,
+                    "kind": self._placement_kind(group),
+                    "x": None,
+                    "y": None,
+                }
+
+            self._refresh_payload_preview()
+            return True
+
+        if action in {"send_event", "send_command"}:
+            self._send_custom_injection(
+                "Audio" if action == "send_command" else None
+            )
+            return True
+
+        if action == "command_quick":
+            self.sim_state.event_injector_fields["audio_command_id"] = str(
+                item["command_id"]
+            )
+            self.sim_state.event_injector_fields["audio_asr_text"] = str(
+                item.get("asr_text") or ""
+            )
+            self.sim_state.event_injector_fields[
+                "audio_event_type"
+            ] = "EVT_VOICE_COMMAND_KNOWN"
+            self._refresh_payload_preview()
+            self._send_custom_injection("Audio")
+            return True
+
+        if action == "publish_state_output":
+            self._request_state_output()
+            return True
+
+        if action == "scenario":
+            self._request_scenario(str(item.get("scenario_id", "")))
+            return True
+        return False
 
     def on_mouse_release(
         self,
@@ -492,6 +708,8 @@ class SimWindow(arcade.Window):
         modifiers: int,
     ) -> None:
         del dx, dy, buttons, modifiers
+        if self._startup_animation_active():
+            return
         if self.sim_state.ui_dragging_user and self.sim_state.ui_user_visible:
             _move_virtual_user_from_screen(self.sim_state, x, y)
             return
@@ -516,18 +734,14 @@ class SimWindow(arcade.Window):
         scroll_y: float,
     ) -> None:
         del scroll_x
+        if self._startup_animation_active():
+            return
+        if self.sim_state.ui_payload_preview_expanded:
+            return
         if (
             config.LEFT_PANEL_LEFT <= x <= config.LEFT_PANEL_RIGHT
             and config.BOTTOM_LOG_HEIGHT <= y <= config.TOP_BAR_BOTTOM
-            and config.LEFT_PANEL_WIDTH > config.COLLAPSED_LEFT_PANEL_WIDTH + 1
         ):
-            self.sim_state.ui_left_scroll = max(
-                0.0,
-                min(
-                    self.widgets.left_scroll_max,
-                    self.sim_state.ui_left_scroll - scroll_y * 34.0,
-                ),
-            )
             return
         if config.RIGHT_PANEL_LEFT <= x <= config.RIGHT_PANEL_RIGHT and y >= config.BOTTOM_LOG_HEIGHT:
             self.sim_state.ui_right_scroll = max(
@@ -997,7 +1211,11 @@ class SimWindow(arcade.Window):
             preferred_action=(
                 "ACT_SNIFF_BOWL_AND_WAIT_FOR_FOOD"
                 if demand == "HUNGER"
-                else None
+                else (
+                    "ACT_SNIFF_AND_CIRCLE_AT_TOILET_SPOT"
+                    if demand == "BLADDER"
+                    else None
+                )
             ),
         )
         self._manual_need_local_goal_id = (
@@ -1537,43 +1755,25 @@ class SimWindow(arcade.Window):
 
     def _handle_injector_key(self, symbol: int) -> bool:
         field_id = self.sim_state.ui_text_focus
-        if not field_id:
+        if field_id != "log_search":
             return False
 
-        enter_keys = {arcade.key.ENTER}
+        exit_keys = {
+            arcade.key.ENTER,
+            arcade.key.ESCAPE,
+            arcade.key.TAB,
+        }
         num_enter = getattr(arcade.key, "NUM_ENTER", None)
         if num_enter is not None:
-            enter_keys.add(num_enter)
-        if symbol in enter_keys:
-            if field_id == "log_search":
-                self.sim_state.ui_text_focus = None
-            elif self.sim_state.ui_input_tab == "State":
-                self._request_state_output()
-            elif self.sim_state.ui_input_tab == "Scenario":
-                self._request_scenario(self.sim_state.ui_selected_scenario)
-            else:
-                self._send_custom_injection(
-                    "Audio" if self.sim_state.ui_input_tab == "Command" else None
-                )
-            return True
-        if symbol == arcade.key.ESCAPE:
-            self.sim_state.event_injector_focused_field = None
+            exit_keys.add(num_enter)
+        if symbol in exit_keys:
             self.sim_state.ui_text_focus = None
-            self.sim_state.ui_open_select = None
-            return True
-        if symbol == arcade.key.TAB:
-            if field_id == "log_search":
-                self.sim_state.ui_text_focus = None
-            else:
-                next_field = next_field_id(self.sim_state.event_injector_group, field_id)
-                self.sim_state.event_injector_focused_field = next_field
-                self.sim_state.ui_text_focus = next_field
             return True
         if symbol == arcade.key.BACKSPACE:
-            self._delete_focused_character(field_id)
+            self.sim_state.ui_log_search = self.sim_state.ui_log_search[:-1]
             return True
         if symbol == arcade.key.DELETE:
-            self._clear_focused_value(field_id)
+            self.sim_state.ui_log_search = ""
             return True
         return True
 
@@ -1617,15 +1817,23 @@ class SimWindow(arcade.Window):
                 float(placement["normalized_x"]),
                 float(placement["normalized_y"]),
             )
-            if group == "Vision" and placement.get("kind") == "human":
-                normalized_x = float(placement["normalized_x"])
-                normalized_y = float(placement["normalized_y"])
-                self.sim_state.user_x = config.SCENE_LOGICAL_LEFT + normalized_x * (
-                    config.SCENE_LOGICAL_RIGHT - config.SCENE_LOGICAL_LEFT
-                )
-                self.sim_state.user_y = config.SCENE_LOGICAL_TOP - normalized_y * (
-                    config.SCENE_LOGICAL_TOP - config.SCENE_LOGICAL_BOTTOM
-                )
+        command = SimWindow._resolve_payload_preview_command(self, command)
+        if command is None:
+            return
+        if (
+            placement
+            and group == "Vision"
+            and placement.get("kind") == "human"
+            and placement.get("normalized_x") is not None
+        ):
+            normalized_x = float(placement["normalized_x"])
+            normalized_y = float(placement["normalized_y"])
+            self.sim_state.user_x = config.SCENE_LOGICAL_LEFT + normalized_x * (
+                config.SCENE_LOGICAL_RIGHT - config.SCENE_LOGICAL_LEFT
+            )
+            self.sim_state.user_y = config.SCENE_LOGICAL_TOP - normalized_y * (
+                config.SCENE_LOGICAL_TOP - config.SCENE_LOGICAL_BOTTOM
+            )
         self.injection_queue.put(command)
         self.sim_state.ui_pending_placement = None
         self._refresh_payload_preview()
@@ -1636,17 +1844,23 @@ class SimWindow(arcade.Window):
         value = str(item.get("value") or "")
         if target == "event_group":
             self.sim_state.event_injector_group = value
-            self.sim_state.ui_left_scroll = 0.0
         elif target == "field":
             field_id = str(item.get("field_id") or "")
             self.sim_state.event_injector_fields[field_id] = value
-        self.sim_state.ui_open_select = None
         self._refresh_payload_preview()
 
     def _normalize_group_for_tab(self) -> None:
-        if self.sim_state.ui_input_tab == "Event" and self.sim_state.event_injector_group not in {"Audio", "Vision", "Result"}:
+        if (
+            self.sim_state.ui_input_tab == "Event"
+            and self.sim_state.event_injector_group
+            not in {"Audio", "Vision", "Result"}
+        ):
             self.sim_state.event_injector_group = "Audio"
-        elif self.sim_state.ui_input_tab == "State" and self.sim_state.event_injector_group not in {"Need", "Emotion", "Personality"}:
+        elif (
+            self.sim_state.ui_input_tab == "State"
+            and self.sim_state.event_injector_group
+            not in {"Need", "Emotion", "Personality"}
+        ):
             self.sim_state.event_injector_group = "Need"
         elif self.sim_state.ui_input_tab == "Command":
             self.sim_state.event_injector_group = "Audio"
@@ -1675,6 +1889,28 @@ class SimWindow(arcade.Window):
         except Exception as exc:
             self.sim_state.ui_preview_topics = []
             self.sim_state.ui_payload_preview = f"Preview unavailable: {exc}"
+        self.sim_state.ui_payload_preview_dirty = False
+        self.sim_state.ui_payload_preview_scroll = 0
+
+    def _resolve_payload_preview_command(
+        self,
+        command: InjectionCommand,
+    ) -> InjectionCommand | None:
+        if not self.sim_state.ui_payload_preview_dirty:
+            return command
+
+        try:
+            return command_from_payload_preview(
+                command,
+                self.sim_state.ui_payload_preview,
+            )
+        except ValueError as exc:
+            self.sim_state.ui_pending_confirmation = {
+                "kind": "alert",
+                "title": "Payload 无效",
+                "message": str(exc),
+            }
+            return None
 
     def _resolved_fields(self, group: str) -> dict[str, str]:
         fields = {**default_field_values(), **self.sim_state.event_injector_fields}
@@ -1749,8 +1985,11 @@ class SimWindow(arcade.Window):
             normalized_y=normalized_y,
             confidence=_safe_float(self.sim_state.event_injector_fields.get("audio_confidence"), 0.9),
         )
-        if pending.get("group") == "Audio":
-            dog_x, dog_y = self.renderer.scene_to_screen(self.sim_state.dog_x, self.sim_state.dog_y)
+        if pending.get("group") == "Audio" and self.renderer is not None:
+            dog_x, dog_y = self.renderer.scene_to_screen(
+                self.sim_state.dog_x,
+                self.sim_state.dog_y,
+            )
             angle = math.degrees(math.atan2(y - dog_y, x - dog_x)) - self.sim_state.dog_heading
             while angle > 180:
                 angle -= 360
@@ -1765,21 +2004,6 @@ class SimWindow(arcade.Window):
         if self.sim_state.event_injector_fields.get("vision_object"):
             return "object"
         return "human"
-
-    def _delete_focused_character(self, field_id: str) -> None:
-        if field_id == "log_search":
-            self.sim_state.ui_log_search = self.sim_state.ui_log_search[:-1]
-            return
-        value = self.sim_state.event_injector_fields.get(field_id, "")
-        self.sim_state.event_injector_fields[field_id] = value[:-1]
-        self._refresh_payload_preview()
-
-    def _clear_focused_value(self, field_id: str) -> None:
-        if field_id == "log_search":
-            self.sim_state.ui_log_search = ""
-            return
-        self.sim_state.event_injector_fields[field_id] = ""
-        self._refresh_payload_preview()
 
     def _copy_selected_payload(self) -> None:
         record = next(
@@ -2725,6 +2949,9 @@ def main(args: Sequence[str] | None = None) -> None:
         )
         LOGGER.info("Arcade window initialized")
         arcade.run()
+    except KeyboardInterrupt:
+        LOGGER.warning(f"user exit.")
+
     except Exception:
         LOGGER.exception("Arcade/ROS2 viewer failed")
         raise
@@ -2756,6 +2983,18 @@ def _safe_float(value: object, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _startup_overlay_alpha(elapsed_sec: float) -> int:
+    remaining_sec = max(
+        0.0,
+        config.STARTUP_ANIMATION_DURATION_SEC - elapsed_sec,
+    )
+    fade_ratio = min(
+        1.0,
+        remaining_sec / config.STARTUP_ANIMATION_FADE_OUT_SEC,
+    )
+    return int(255 * fade_ratio)
 
 
 if __name__ == "__main__":

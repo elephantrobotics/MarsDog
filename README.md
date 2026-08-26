@@ -137,14 +137,13 @@ UI 表单 -> InjectionCommand -> RosBridge Publisher -> ROS2 Topic -> 下游节�
 ├── marsdog_sim2d/
 │   ├── arcade_viewer_node.py       # Arcade 窗口、交互和主入口
 │   ├── config.py                   # 布局、颜色、Topic 和场景锚点
-│   ├── drawing.py                  # 文本绘制辅助
+│   ├── components/                 # 通用 GUI 组件和绘制辅助
 │   ├── event_injector.py           # 手动注入、数值推导和场景模板
 │   ├── parsers.py                  # ROS2 JSON 消息解析
-│   ├── renderer.py                 # 室内场景和动态对象渲染
 │   ├── ros_bridge.py               # ROS2 订阅、发布和线程桥接
 │   ├── sim_state.py                # UI 线程状态与事件缓存
 │   ├── virtual_executor.py         # 虚拟 Action Server 和动作脚本
-│   ├── widgets.py                  # 左右面板、顶部状态和事件流
+│   ├── views/                      # 场景渲染、左侧控制和状态面板
 │   └── assets/
 │       ├── backgrounds/            # 室内底图原图与运行时纹理
 │       └── dog/                    # 六种透明背景小金毛姿态
@@ -310,33 +309,15 @@ python main.py
 
 ## 6. 运行模式
 
-### 6.1 模式 A：虚拟 Action Server
+### 6.1 模式 A：仅可视化真实执行器（默认）
 
-这是默认模式。界面注册 `/execute_behavior` Action Server，把行为树 Goal 转换为轻量级室内动作脚本。
+默认不创建 `/execute_behavior` Action Server，避免和真实
+`marsdog_action_executor` 抢占同一个接口。界面只订阅
+`/debug/execute_behavior/*`，用真实 Feedback 驱动状态面板和动画。
 
 ```bash
 uv run --no-sync python main.py
 ```
-
-适用于：
-
-- 没有真实运动控制器时调试行为树。
-- 检查 behavior、ACT、stage、target 和反馈链路。
-- 演示进食、睡眠、如厕、互动、探索、护理和充电行为。
-
-同一 ROS Domain 中只能有一个 `/execute_behavior` Server。启用本模式时，不要同时启动真实 `marsdog_action_executor`。
-
-### 6.2 模式 B：仅可视化真实执行器
-
-本项目默认不创建 `/execute_behavior` Action Server，避免和真实
-`marsdog_action_executor` 抢占同一个接口。只有在明确需要虚拟 Server 联调时才开启：
-
-```bash
-MARSDOG_SIM2D_ACTION_SERVER=1 \
-uv run --no-sync python main.py
-```
-
-默认模式只订阅 `/debug/execute_behavior/*`，用真实 Feedback 驱动状态面板和动画。
 
 页面每秒检查一次 ROS Graph，并且只把其他节点提供的 Publisher 视为后端在线：
 
@@ -349,6 +330,23 @@ uv run --no-sync python main.py
 `/debug/execute_behavior/feedback` 接管。动作系统退出后，UI 自动恢复离线演示模式。
 仅看到 Topic 名称不能证明对应系统已启动，因为订阅端以及 UI 自己的手动注入
 Publisher 也会让名称出现在 `ros2 topic list` 中。
+
+### 6.2 模式 B：虚拟 Action Server（可选）
+
+只有在明确需要虚拟 Server 联调时才开启：
+
+```bash
+MARSDOG_SIM2D_ACTION_SERVER=1 \
+uv run --no-sync python main.py
+```
+
+适用于：
+
+- 没有真实运动控制器时调试行为树。
+- 检查 behavior、ACT、stage、target 和反馈链路。
+- 演示进食、睡眠、如厕、互动、探索、护理和充电行为。
+
+同一 ROS Domain 中只能有一个 `/execute_behavior` Server。启用本模式时，不要同时启动真实 `marsdog_action_executor`。
 
 ### 6.3 模式 C：本地动画自测
 
@@ -614,12 +612,12 @@ pending，不会立即覆盖当前行为卡；只有较新的 Goal 收到首条 
 - closed-eye sleep、self-groom、toilet squat、shake water、eat
 - joy belly-up、excited toy shake、anxiety cower、fear cover-eyes、curious paw
 - chew/carry food、scratch food、burp、lick lips/nose、carry bowl
-- scratch ground、rub body、scratch ear、stretch、yawn、sploot
+- sniff/circle、scratch/sniff/shake then leave、rub body、scratch ear、stretch、yawn、sploot
 - crawl/roll/bounce/stretch/sit wake-up、lying bark/whine、head tilt
 
 渲染器只按 Feedback 中大小写敏感的完整 `current_action` 查找图片和移动规则。
-当前 YAML 的 188 个唯一动作中，可用现有素材明确表达的动作显示对应 2D 图片；
-目前 135 个动作有严格 2D 映射，其余 53 个动作在场景和“当前行为”卡中明确
+当前 YAML 的 189 个唯一动作中，可用现有素材明确表达的动作显示对应 2D 图片；
+目前 140 个动作有严格 2D 映射，其余 49 个动作在场景和“当前行为”卡中明确
 标为“仅文字展示”，不会静默换成语义相近的旧图片。素材位于
 `marsdog_sim2d/assets/dog/`。
 

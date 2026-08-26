@@ -5,7 +5,7 @@ from marsdog_sim2d.action_visuals import (
     is_text_only_action,
 )
 from marsdog_sim2d.behavior_contract import contract_action_ids
-from marsdog_sim2d.renderer import (
+from marsdog_sim2d.views.renderer import (
     _dog_pose_for_action,
     _dog_sprite_angle,
     _sleep_indicator_visible,

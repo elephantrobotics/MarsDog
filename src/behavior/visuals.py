@@ -8,6 +8,7 @@ explicitly text-only in the UI.
 
 from __future__ import annotations
 
+import typing as T
 from dataclasses import dataclass
 
 
@@ -19,26 +20,37 @@ class ActionVisual:
     defer_pose_until_arrival: bool = False
 
 
-ACTION_VISUALS: dict[str, ActionVisual] = {}
+class VisualBehaviorManager(object):
+
+    def __init__(self):
+        self.visual__behaviors = {}
+
+    def register(self, pose: str, action_ids: T.Sequence[str], target: T.Optional[str] = None, moves: bool = False, defer_pose_until_arrival: bool = False) -> None:
+        visual = ActionVisual(
+            pose=pose,
+            target=target,
+            moves=moves,
+            defer_pose_until_arrival=defer_pose_until_arrival,
+        )
+        for action_id in action_ids:
+            if action_id in self.visual__behaviors.keys():
+                raise ValueError(f"duplicate 2D action mapping: {action_id}")
+            self.visual__behaviors[action_id] = visual
+
+    def is_text_only_action(self, action_id: T.Optional[None] = None) -> bool:
+        action_id = str(action_id or "")
+        return bool(action_id and action_id != "-" and action_id not in self.visual__behaviors.keys())
+
+    def get_action(self, action_id: T.Optional[str]) ->  T.Optional[ActionVisual]:
+        """Return an exact 2D mapping, or ``None`` for an explicit text-only ACT."""
+        return self.visual__behaviors.get(str(action_id or ""), None)
 
 
-def _register(
-    pose: str,
-    *action_ids: str,
-    target: str | None = None,
-    moves: bool = False,
-    defer_pose_until_arrival: bool = False,
-) -> None:
-    visual = ActionVisual(
-        pose=pose,
-        target=target,
-        moves=moves,
-        defer_pose_until_arrival=defer_pose_until_arrival,
-    )
-    for action_id in action_ids:
-        if action_id in ACTION_VISUALS:
-            raise ValueError(f"duplicate 2D action mapping: {action_id}")
-        ACTION_VISUALS[action_id] = visual
+visual_behavior_manager = VisualBehaviorManager()
+
+
+def _register(pose: str, *action_ids: str, target: str | None = None, moves: bool = False, defer_pose_until_arrival: bool = False) -> None:
+    visual_behavior_manager.register(pose, action_ids, target, moves, defer_pose_until_arrival)
 
 
 # Food and bowl interaction.
@@ -86,60 +98,19 @@ _register(
     "ACT_LICK_LIPS_OR_NOSE",
     target="bowl",
 )
-_register(
-    "walk_away_lie_down",
-    "ACT_WALK_AWAY_OR_LIE_DOWN",
-    target="away",
-    moves=True,
-    defer_pose_until_arrival=True,
-)
-_register(
-    "sniff_crumbs_leave",
-    "ACT_SNIFF_GROUND_FOR_CRUMBS_AND_LEAVE",
-    target="away",
-    moves=True,
-)
-_register(
-    "lick_lips_leave",
-    "ACT_LICK_LIPS_OR_NOSE_AND_LEAVE",
-    target="away",
-    moves=True,
-)
 _register("head_tilt_observe", "ACT_PAUSE_AND_LOOK_AT_OWNER")
 _register("sit", "ACT_CHANGE_POSTURE", target="bowl")
 
 # Elimination and grooming.
 _register(
-    "sniff_circle",
-    "ACT_SNIFF_AND_CIRCLE",
-    target="circle_here",
-    moves=True,
-)
-_register(
-    "sniff_circle",
+    "walk",
     "ACT_SNIFF_AND_CIRCLE_AT_TOILET_SPOT",
-    target="circle_pad",
+    target="pad",
     moves=True,
 )
 _register("toilet", "ACT_SQUAT_AND_ELIMINATE", target="pad")
-_register(
-    "scratch_ground_leave",
-    "ACT_SCRATCH_SOIL_OR_GROUND",
-    target="toilet_away",
-    moves=True,
-)
-_register(
-    "sniff_excrement_leave",
-    "ACT_SNIFF_EXCREMENT",
-    target="toilet_away",
-    moves=True,
-)
-_register(
-    "walk_away_shake_head",
-    "ACT_WALK_AWAY_OR_SHAKE_HEAD",
-    target="toilet_away",
-    moves=True,
-)
+_register("scratch_ground", "ACT_SCRATCH_SOIL_OR_GROUND", target="pad")
+_register("play_bow", "ACT_SNIFF_EXCREMENT", target="pad")
 _register("groom", "ACT_LICK_PAWS_OR_FUR", target="groom")
 _register("groom", "ACT_LICK_FUR_OR_PAWS")
 _register("body_rub_object", "ACT_RUB_BODY_AGAINST_OBJECT", target="groom")
@@ -333,13 +304,3 @@ _register(
     moves=True,
 )
 
-
-def visual_for_action(action_id: str | None) -> ActionVisual | None:
-    """Return an exact 2D mapping, or ``None`` for an explicit text-only ACT."""
-
-    return ACTION_VISUALS.get(str(action_id or ""))
-
-
-def is_text_only_action(action_id: str | None) -> bool:
-    action_id = str(action_id or "")
-    return bool(action_id and action_id != "-" and action_id not in ACTION_VISUALS)

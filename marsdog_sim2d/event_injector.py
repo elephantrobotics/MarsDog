@@ -43,17 +43,6 @@ SCENARIOS = (
     ("explore_toy", "Explore Toy", "Toy detection plus exploration need"),
 )
 
-_RAIL_X = config.EVENT_PANEL_LEFT + 12
-_RAIL_TOP = config.WORLD_TOP - 48
-_RAIL_WIDTH = config.EVENT_PANEL_WIDTH - 24
-_DRAWER_X = _RAIL_X
-_DRAWER_WIDTH = _RAIL_WIDTH
-_ITEM_HEIGHT = 18
-_ITEM_GAP = 4
-_INPUT_HEIGHT = 19
-_INPUT_GAP = 4
-
-
 @dataclass(frozen=True, slots=True)
 class EventMessageSpec:
     topic: str
@@ -89,6 +78,41 @@ class InjectionCommand:
     messages: tuple[InjectionMessage, ...]
 
 
+def command_from_payload_preview(
+    command: InjectionCommand,
+    preview_text: str,
+) -> InjectionCommand:
+    """Replace a generated command's messages with an edited JSON preview."""
+    try:
+        preview = json.loads(preview_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"JSON 格式错误：第 {exc.lineno} 行，第 {exc.colno} 列"
+        ) from exc
+
+    if not isinstance(preview, list) or not preview:
+        raise ValueError("Payload 必须是非空消息数组")
+
+    allowed_topics = {message.topic for message in command.messages}
+    messages: list[InjectionMessage] = []
+    for message_index, item in enumerate(preview, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"第 {message_index} 项必须是对象")
+
+        topic = item.get("topic")
+        payload = item.get("payload")
+        if not isinstance(topic, str) or not topic.strip():
+            raise ValueError(f"第 {message_index} 项缺少有效 topic")
+        if topic.strip() not in allowed_topics:
+            raise ValueError(f"第 {message_index} 项的 topic 不属于当前预览")
+        if not isinstance(payload, dict):
+            raise ValueError(f"第 {message_index} 项的 payload 必须是对象")
+
+        messages.append(InjectionMessage(topic.strip(), payload))
+
+    return InjectionCommand(command.template_id, command.label, tuple(messages))
+
+
 def build_injection_command(template_id: str) -> InjectionCommand:
     template = EVENT_TEMPLATE_BY_ID[template_id]
     timestamp = time.time()
@@ -113,20 +137,6 @@ def ensure_field_defaults(values: dict[str, str] | None) -> dict[str, str]:
 def field_max_chars(field_id: str) -> int:
     spec = _FIELD_SPEC_BY_ID.get(field_id)
     return spec.max_chars if spec is not None else 80
-
-
-def next_field_id(group: str, current_field_id: str | None) -> str | None:
-    specs = CUSTOM_FIELD_SPECS.get(normalize_group(group), ())
-    if not specs:
-        return None
-    if current_field_id is None:
-        return specs[0].field_id
-    field_ids = [spec.field_id for spec in specs]
-    try:
-        index = field_ids.index(current_field_id)
-    except ValueError:
-        return field_ids[0]
-    return field_ids[(index + 1) % len(field_ids)]
 
 
 def build_custom_injection_command(
@@ -295,144 +305,6 @@ def place_injection_command(
                     item["y"] = _clamp(point_y - height / 2, 0.0, 1.0)
         messages.append(InjectionMessage(message.topic, payload))
     return InjectionCommand(command.template_id, command.label, tuple(messages))
-
-
-def template_at(x: float, y: float) -> EventTemplate | None:
-    item = hit_layout_item(x, y, is_open=True, active_group=DEFAULT_INJECTOR_GROUP)
-    if item is not None and item["kind"] == "button":
-        return item["template"]
-    return None
-
-
-def hit_layout_item(
-    x: float,
-    y: float,
-    is_open: bool,
-    active_group: str,
-    field_values: dict[str, str] | None = None,
-    focused_field: str | None = None,
-) -> dict[str, Any] | None:
-    for item in iter_layout_items(is_open, active_group, field_values, focused_field):
-        if not item.get("clickable", False):
-            continue
-        if item["x"] <= x <= item["x"] + item["w"] and item["y"] <= y <= item["y"] + item["h"]:
-            return item
-    return None
-
-
-def iter_layout_items(
-    is_open: bool = False,
-    active_group: str = DEFAULT_INJECTOR_GROUP,
-    field_values: dict[str, str] | None = None,
-    focused_field: str | None = None,
-) -> list[dict[str, Any]]:
-    active_group = normalize_group(active_group)
-    fields = ensure_field_defaults(field_values)
-    items: list[dict[str, Any]] = []
-    y = _RAIL_TOP - 22
-    items.append(
-        {
-            "kind": "toggle",
-            "label": "Event Injector",
-            "x": _RAIL_X,
-            "y": y,
-            "w": _RAIL_WIDTH,
-            "h": 20,
-            "clickable": True,
-        }
-    )
-    y -= 25
-    for group in INJECTOR_GROUPS:
-        items.append(
-            {
-                "kind": "group_tab",
-                "label": group,
-                "group": group,
-                "active": group == active_group,
-                "x": _RAIL_X,
-                "y": y,
-                "w": _RAIL_WIDTH,
-                "h": _ITEM_HEIGHT,
-                "clickable": True,
-            }
-        )
-        y -= _ITEM_HEIGHT + _ITEM_GAP
-
-    if not is_open:
-        return items
-
-    drawer_y = y - 6
-    group_templates = [template for template in EVENT_TEMPLATES if template.group == active_group]
-    field_specs = CUSTOM_FIELD_SPECS.get(active_group, ())
-    custom_rows = len(field_specs) + 1 if field_specs else 0
-    row_count = custom_rows + len(group_templates)
-    items.append(
-        {
-            "kind": "drawer",
-            "label": active_group,
-            "x": _DRAWER_X,
-            "y": drawer_y - 31 - row_count * (_INPUT_HEIGHT + _INPUT_GAP),
-            "w": _DRAWER_WIDTH,
-            "h": 35 + row_count * (_INPUT_HEIGHT + _INPUT_GAP),
-            "clickable": False,
-        }
-    )
-    items.append(
-        {
-            "kind": "drawer_title",
-            "label": active_group,
-            "x": _DRAWER_X + 8,
-            "y": drawer_y - 1,
-            "w": _DRAWER_WIDTH - 18,
-            "h": 18,
-            "clickable": False,
-        }
-    )
-    y = drawer_y - 25
-    for spec in field_specs:
-        items.append(
-            {
-                "kind": "input",
-                "field": spec,
-                "value": fields.get(spec.field_id, ""),
-                "active": focused_field == spec.field_id,
-                "x": _DRAWER_X + 8,
-                "y": y - _INPUT_HEIGHT,
-                "w": _DRAWER_WIDTH - 16,
-                "h": _INPUT_HEIGHT,
-                "clickable": True,
-            }
-        )
-        y -= _INPUT_HEIGHT + _INPUT_GAP
-
-    if field_specs:
-        items.append(
-            {
-                "kind": "custom_send",
-                "label": f"Send {active_group}",
-                "x": _DRAWER_X + 8,
-                "y": y - _INPUT_HEIGHT,
-                "w": _DRAWER_WIDTH - 16,
-                "h": _INPUT_HEIGHT,
-                "clickable": True,
-            }
-        )
-        y -= _INPUT_HEIGHT + _INPUT_GAP
-
-    for template in group_templates:
-        items.append(
-            {
-                "kind": "button",
-                "template": template,
-                "x": _DRAWER_X + 8,
-                "y": y - _ITEM_HEIGHT,
-                "w": _DRAWER_WIDTH - 16,
-                "h": _ITEM_HEIGHT,
-                "clickable": True,
-            }
-        )
-        y -= _ITEM_HEIGHT + _ITEM_GAP
-    return items
 
 
 def normalize_group(group: str) -> str:

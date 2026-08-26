@@ -594,6 +594,59 @@ class VirtualRoom:
             else 1.0
         )
         frame = self._base_frame(visual_plan, frame_progress)
+        if exact_visual is not None:
+            if exact_visual.target == "circle_here":
+                frame["dog_pose"] = _circle_motion_pose(
+                    self.dog_x,
+                    self.dog_y,
+                    frame_progress,
+                )
+            elif exact_visual.target == "circle_pad":
+                pad_x, pad_y, pad_heading = _object_interaction_pose(
+                    self.objects,
+                    "pad",
+                )
+                approach_end = 0.58
+                if frame_progress <= approach_end:
+                    approach_progress = _ease(frame_progress / approach_end)
+                    frame["dog_pose"] = {
+                        "x": _lerp(self.dog_x, pad_x, approach_progress),
+                        "y": _lerp(self.dog_y, pad_y, approach_progress),
+                        "heading": _lerp_angle(
+                            self.dog_heading,
+                            pad_heading,
+                            approach_progress,
+                        ),
+                    }
+                else:
+                    circle_progress = (
+                        frame_progress - approach_end
+                    ) / (1.0 - approach_end)
+                    frame["dog_pose"] = _circle_motion_pose(
+                        pad_x,
+                        pad_y,
+                        circle_progress,
+                    )
+            elif exact_visual.target in {"away", "toilet_away"}:
+                origin = (
+                    "bowl"
+                    if exact_visual.target == "away"
+                    else "pad"
+                )
+                start_x, start_y, start_heading = _object_interaction_pose(
+                    self.objects,
+                    origin,
+                )
+                eased_progress = _ease(frame_progress)
+                frame["dog_pose"] = {
+                    "x": _lerp(start_x, visual_plan.target_x, eased_progress),
+                    "y": _lerp(start_y, visual_plan.target_y, eased_progress),
+                    "heading": _lerp_angle(
+                        start_heading,
+                        visual_plan.target_heading,
+                        eased_progress,
+                    ),
+                }
         frame["progress"] = progress
         frame["current_action"] = current_action
         frame["message"] = current_action
@@ -685,6 +738,42 @@ class VirtualRoom:
                 heading = _heading_to(
                     self.dog_x,
                     self.dog_y,
+                    target_x,
+                    target_y,
+                )
+            elif target == "circle_here":
+                target_x = self.dog_x
+                target_y = self.dog_y
+                heading = self.dog_heading
+            elif target == "circle_pad":
+                target_x, target_y, heading = _object_interaction_pose(
+                    self.objects,
+                    "pad",
+                )
+                active_object = "pad"
+            elif target == "away":
+                bowl_x, bowl_y = _object_xy(self.objects, "bowl")
+                target_x, target_y = _random_calm_idle_target(
+                    bowl_x,
+                    bowl_y,
+                    rng=random.Random(f"{plan.goal_id}:{current_action}"),
+                )
+                heading = _heading_to(
+                    bowl_x,
+                    bowl_y,
+                    target_x,
+                    target_y,
+                )
+            elif target == "toilet_away":
+                pad_x, pad_y = _object_xy(self.objects, "pad")
+                target_x, target_y = _random_calm_idle_target(
+                    pad_x,
+                    pad_y,
+                    rng=random.Random(f"{plan.goal_id}:{current_action}"),
+                )
+                heading = _heading_to(
+                    pad_x,
+                    pad_y,
                     target_x,
                     target_y,
                 )
@@ -1411,12 +1500,9 @@ class LocalVirtualRunner:
         now = time.monotonic()
         if _plan_follows_user(self.plan):
             if state is not None:
-                self.room.user_x = float(
-                    getattr(state, "user_x", self.room.user_x)
-                )
-                self.room.user_y = float(
-                    getattr(state, "user_y", self.room.user_y)
-                )
+                self.room.user_x = float(getattr(state, "user_x", self.room.user_x))
+                self.room.user_y = float(getattr(state, "user_y", self.room.user_y))
+
             delta_time = max(1.0 / 120.0, now - self.last_updated_at)
             self.last_updated_at = now
             frame = self.room.follow_frame(self.plan, delta_time)
@@ -1426,19 +1512,12 @@ class LocalVirtualRunner:
                     "action_feedback",
                     config.ACTION_FEEDBACK_TOPIC,
                     frame,
-                    (
-                        "local_execute_behavior: "
-                        f"{self.plan.behavior_name} {frame['current_action']}"
-                    ),
+                    f"local_execute_behavior: {self.plan.behavior_name} {frame['current_action']}"
                 )
             ]
 
         if _plan_requires_bowl_food(self.plan):
-            has_food = bool(
-                getattr(state, "ui_bowl_has_food", False)
-                if state is not None
-                else False
-            )
+            has_food = bool(getattr(state, "ui_bowl_has_food", False) if state is not None else False)
             if has_food and self.food_wait_started_at is not None:
                 # Exclude time spent waiting from behavior progress so adding
                 # food resumes the interaction instead of completing at once.
@@ -1451,19 +1530,12 @@ class LocalVirtualRunner:
         progress = min(1.0, elapsed / max(self.plan.duration, 0.1))
 
         frame = self.room.frame(self.plan, progress)
-        has_food = bool(
-            getattr(state, "ui_bowl_has_food", False)
-            if state is not None
-            else False
-        )
-        if (
-            _plan_requires_bowl_food(self.plan)
-            and not has_food
-            and _action_requires_food(frame.get("current_action"))
-        ):
+        has_food = bool(getattr(state, "ui_bowl_has_food", False) if state is not None else False)
+        if _plan_requires_bowl_food(self.plan) and not has_food and _action_requires_food(frame.get("current_action")):
             if self.food_wait_started_at is None:
                 self.food_wait_started_at = now
                 self.food_wait_progress = progress
+
             progress = self.food_wait_progress or progress
             frame = self.room.frame(self.plan, progress)
             frame["progress"] = progress
@@ -1471,6 +1543,7 @@ class LocalVirtualRunner:
             frame["message"] = "Food bowl is empty; waiting before consumption"
             frame["phase"] = "waiting_for_food"
             frame["target_label"] = "food bowl"
+
         self.last_frame = frame
         events = [
             SimEvent(
@@ -1501,15 +1574,13 @@ class LocalVirtualRunner:
             self.paused_at = None
             self.food_wait_started_at = None
             self.food_wait_progress = None
+
         return events
 
 
 def _goal_to_dict(goal: Any) -> dict[str, Any]:
     behavior_name = str(getattr(goal, "behavior_name", "") or "")
-    goal_id = str(
-        getattr(goal, "goal_id", "")
-        or f"virtual-{uuid.uuid4().hex}"
-    )
+    goal_id = str(getattr(goal, "goal_id", "") or f"virtual-{uuid.uuid4().hex}")
     behavior_id = str(getattr(goal, "behavior_id", "") or "")
     raw_params = getattr(goal, "params", None)
     if isinstance(raw_params, dict):
@@ -1560,10 +1631,7 @@ def _goal_topic_to_dict(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _normalize_action_debug_payload(
-    data: dict[str, Any],
-    kind: str,
-) -> dict[str, Any]:
+def _normalize_action_debug_payload(data: dict[str, Any], kind: str) -> dict[str, Any]:
     """Normalize flat/nested and snake/camel debug JSON to one UI contract."""
 
     source = dict(data)
@@ -1669,11 +1737,7 @@ def _topic_feedback_payload(frame: dict[str, Any]) -> dict[str, Any]:
         "status": frame["status"],
         "progress": float(frame["progress"]),
         "safe_to_interrupt": bool(frame["safe_to_interrupt"]),
-        "current_stage": str(
-            frame.get("current_stage")
-            or frame.get("stage_label")
-            or ""
-        ),
+        "current_stage": str(frame.get("current_stage") or frame.get("stage_label") or ""),
         "current_action": frame["current_action"],
         "message": frame["message"],
         "timestamp": time.time(),
@@ -1724,9 +1788,7 @@ def _user_action_offset(action_key: str) -> tuple[float, float]:
 
 
 def _action_is_non_motion_unit(action_key: str) -> bool:
-    return any(
-        token in action_key
-        for token in (
+    return any(token in action_key for token in (
             "IGNORE_",
             "POLICY",
             "NO_MOTION",
@@ -1749,16 +1811,21 @@ def _fetch_progress_for_action(action: str, reported_progress: float) -> float:
     progress = max(0.0, min(1.0, reported_progress))
     if "RELEASE" in key or "DROP" in key or "PRESENT" in key:
         return max(0.90, progress)
+
     if "RETURN_TO_OWNER" in key or (
         ("OWNER" in key or "USER" in key) and ("CARRY" in key or "TROT" in key)
     ):
         return max(0.50, min(0.89, progress))
+
     if "GRAB" in key:
         return max(0.36, min(0.49, progress))
+
     if "APPROACH_OBJECT" in key or "APPROACH_TOY" in key:
         return min(0.35, progress)
+
     if "PERCEPT" in key or "SCAN" in key or "LOCATE" in key:
         return 0.0
+
     return progress
 
 
@@ -1773,11 +1840,14 @@ def _target_label_for_plan(plan: BehaviorPlan) -> str:
             "groom": "groom mat",
         }
         return labels.get(plan.active_object, plan.active_object)
+
     key = _behavior_key(f"{plan.behavior_name} {plan.current_action}")
     if _action_targets_user(key):
         return "owner"
+
     if "HIDE" in key or "FLEE" in key or "AVOID" in key or "DANGER" in key:
         return "safe zone"
+
     return "room"
 
 
@@ -1786,16 +1856,13 @@ def _is_own_debug_message(data: dict[str, Any]) -> bool:
 
 
 def _plan_follows_user(plan: BehaviorPlan | None) -> bool:
-    return (
-        plan is not None
-        and _behavior_key(plan.behavior_name)
-        in _VOICE_FOLLOW_BEHAVIORS
-    )
+    return plan is not None and _behavior_key(plan.behavior_name) in _VOICE_FOLLOW_BEHAVIORS
 
 
 def _plan_requires_bowl_food(plan: BehaviorPlan | None) -> bool:
     if plan is None:
         return False
+
     return _behavior_key(plan.behavior_name) in {
         "EAT_NORMALLY",
         "EAT_EXCITEDLY",
@@ -1925,6 +1992,23 @@ def _random_calm_idle_target(
         centers,
         key=lambda point: math.hypot(point[0] - dog_x, point[1] - dog_y),
     )
+
+
+def _circle_motion_pose(
+    center_x: float,
+    center_y: float,
+    progress: float,
+    *,
+    radius: float = 26.0,
+) -> dict[str, float]:
+    """Return a closed circular sniff path that starts and ends at center."""
+
+    angle = math.tau * _clamp(progress, 0.0, 1.0)
+    return {
+        "x": center_x + radius * (math.cos(angle) - 1.0),
+        "y": center_y + radius * math.sin(angle),
+        "heading": (math.degrees(angle) + 90.0) % 360.0,
+    }
 
 
 def _object_interaction_pose(

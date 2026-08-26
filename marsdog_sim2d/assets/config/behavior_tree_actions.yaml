@@ -108,6 +108,7 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
+          - {unit_id: ACT_SNIFF_AND_CIRCLE}
           - {unit_id: ACT_SNIFF_AND_CIRCLE_AT_TOILET_SPOT}
       - stage_id: action
         order: 2

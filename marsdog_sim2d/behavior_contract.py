@@ -22,12 +22,12 @@ CONTRACT_PATH = (
     / "behavior_tree_actions.yaml"
 )
 
-_BEHAVIOR_RE = re.compile(r"^  ([A-Za-z0-9_]+):\s*$")
-_STAGE_RE = re.compile(r"^      - stage_id:\s*([A-Za-z0-9_]+)\s*$")
-_ORDER_RE = re.compile(r"^        order:\s*(\d+)\s*$")
-_REQUIRED_RE = re.compile(r"^        required:\s*(true|false)\s*$", re.IGNORECASE)
+_BEHAVIOR_RE = re.compile(r"^ {2}([A-Za-z0-9_]+):\s*$")
+_STAGE_RE = re.compile(r"^ {6}- stage_id:\s*([A-Za-z0-9_]+)\s*$")
+_ORDER_RE = re.compile(r"^ {8}order:\s*(\d+)\s*$")
+_REQUIRED_RE = re.compile(r"^ {8}required:\s*(true|false)\s*$", re.IGNORECASE)
 _ACTION_RE = re.compile(
-    r"^          - \{unit_id:\s*(ACT_[A-Za-z0-9_]+)\}\s*$"
+    r"^ {10}- \{unit_id:\s*(ACT_[A-Za-z0-9_]+)}\s*$"
 )
 
 
@@ -181,15 +181,12 @@ def contract_action_ids() -> frozenset[str]:
     )
 
 
-def stage_position(
-    behavior_name: str | None,
-    stage_id: str | None,
-) -> tuple[int, int] | None:
+def stage_position(behavior_name: str | None, stage_id: str | None) -> tuple[int, int] | None:
     """Return the one-based Stage position declared by the contract."""
-
     behavior = load_behavior_contract().get(str(behavior_name or ""))
     if behavior is None or not stage_id:
         return None
+
     for index, stage in enumerate(behavior.stages, start=1):
         if stage.stage_id == stage_id:
             return index, len(behavior.stages)

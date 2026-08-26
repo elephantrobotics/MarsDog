@@ -1,5 +1,9 @@
+from pathlib import Path
 import time
 import unittest
+from unittest.mock import patch
+
+from PIL import Image
 
 from marsdog_sim2d import config
 from marsdog_sim2d.arcade_viewer_node import (
@@ -8,6 +12,7 @@ from marsdog_sim2d.arcade_viewer_node import (
 )
 from marsdog_sim2d.behavior_contract import SelectedStage
 from marsdog_sim2d.sim_state import SimEvent, SimState
+from marsdog_sim2d.views.renderer import WorldRenderer
 from marsdog_sim2d.virtual_executor import LocalVirtualRunner
 
 
@@ -34,6 +39,80 @@ class FoodSupplyControlTests(unittest.TestCase):
         self.assertTrue(state.ui_bowl_has_food)
         SimWindow._toggle_bowl_food(harness)
         self.assertFalse(state.ui_bowl_has_food)
+
+    def test_world_renderer_loads_generated_scene_object_assets(self) -> None:
+        loaded_paths: list[Path] = []
+
+        with patch(
+            "marsdog_sim2d.views.renderer.arcade.load_texture",
+            side_effect=lambda path: loaded_paths.append(Path(path)) or object(),
+        ):
+            WorldRenderer()
+
+        asset_dir = (
+            Path(__file__).parents[1]
+            / "marsdog_sim2d"
+            / "assets"
+            / "objects"
+        )
+        dimensions: set[tuple[int, int]] = set()
+        visible_bounds: list[tuple[int, int, int, int]] = []
+        for filename in (
+            "marsdog_food_bowl.png",
+            "marsdog_food_bowl_with_food.png",
+        ):
+            asset_path = asset_dir / filename
+            data = asset_path.read_bytes()
+            self.assertIn(asset_path, loaded_paths)
+            self.assertEqual(6, data[25])  # PNG color type RGBA.
+            dimensions.add(
+                (
+                    int.from_bytes(data[16:20], "big"),
+                    int.from_bytes(data[20:24], "big"),
+                )
+            )
+            with Image.open(asset_path) as image:
+                visible_alpha = image.getchannel("A").point(
+                    lambda value: 255 if value > 32 else 0
+                )
+                visible_bounds.append(visible_alpha.getbbox())
+        self.assertEqual({(1295, 1214)}, dimensions)
+        self.assertTrue(
+            all(
+                abs(empty_edge - food_edge) <= 1
+                for empty_edge, food_edge in zip(*visible_bounds)
+            )
+        )
+
+        toilet_pad_path = asset_dir / "marsdog_toilet_pad.png"
+        toilet_pad_data = toilet_pad_path.read_bytes()
+        self.assertIn(toilet_pad_path, loaded_paths)
+        self.assertEqual(6, toilet_pad_data[25])
+
+    def test_world_renderer_uses_food_texture_for_supplied_bowl(self) -> None:
+        renderer = WorldRenderer.__new__(WorldRenderer)
+        renderer._food_bowl_texture = object()
+        renderer._food_bowl_with_food_texture = object()
+
+        with (
+            patch("marsdog_sim2d.views.renderer.arcade.LBWH", return_value=object()),
+            patch("marsdog_sim2d.views.renderer.arcade.draw_texture_rect") as draw,
+        ):
+            renderer._draw_food_bowl(100.0, 100.0, False, 1.0, has_food=True)
+
+        self.assertIs(renderer._food_bowl_with_food_texture, draw.call_args.args[0])
+
+    def test_world_renderer_uses_toilet_pad_texture(self) -> None:
+        renderer = WorldRenderer.__new__(WorldRenderer)
+        renderer._toilet_pad_texture = object()
+
+        with (
+            patch("marsdog_sim2d.views.renderer.arcade.LBWH", return_value=object()),
+            patch("marsdog_sim2d.views.renderer.arcade.draw_texture_rect") as draw,
+        ):
+            renderer._draw_toilet_pad(100.0, 100.0, False, 1.0)
+
+        self.assertIs(renderer._toilet_pad_texture, draw.call_args.args[0])
 
     def test_local_eating_stage_pauses_at_empty_bowl(self) -> None:
         state = SimState()

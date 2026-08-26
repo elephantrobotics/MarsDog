@@ -17,6 +17,29 @@ from .behavior_contract import stage_position
 from .voice_commands import behavior_runs_beside_owner
 
 
+_ACTION_EVENT_KINDS = frozenset({"action_goal", "action_feedback", "action_result"})
+_ABNORMAL_DEFERRED_EVENT_KINDS = _ACTION_EVENT_KINDS | {"behavior_result_event"}
+_SYSTEM_EVENT_KINDS = frozenset(
+    {
+        "simulation_time_state",
+        "ros_graph_state",
+        "feeding_authorized",
+        "manual_injection",
+        "action_server_state",
+    }
+)
+_PERCEPTION_EVENT_KINDS = frozenset({"visual_event", "audio_event"})
+_INTERNAL_STATE_EVENT_KINDS = frozenset(
+    {
+        "internal_need_state",
+        "internal_need_signal_event",
+        "emotion_state",
+        "emotion_signal_event",
+        "personality_state",
+    }
+)
+
+
 @dataclass(slots=True)
 class SimEvent:
     """Normalized event passed from ROS callbacks to the Arcade thread."""
@@ -140,16 +163,16 @@ class SimState:
     event_injector_open: bool = False
     event_injector_group: str = "Audio"
     event_injector_fields: dict[str, str] = field(default_factory=dict)
-    event_injector_focused_field: str | None = None
     audio_wake_angle: float | None = None
 
     # UI-only state. These fields never alter ROS topic names, message fields,
     # or the state values received from ROS2.
     ui_left_collapsed: bool = False
-    ui_left_scroll: float = 0.0
     ui_input_tab: str = "Event"
-    ui_open_select: str | None = None
     ui_payload_preview: str = ""
+    ui_payload_preview_dirty: bool = False
+    ui_payload_preview_expanded: bool = False
+    ui_payload_preview_scroll: int = 0
     ui_preview_topics: list[str] = field(default_factory=list)
     ui_selected_scenario: str = "high_hunger"
     ui_pending_placement: dict[str, Any] | None = None
@@ -285,51 +308,79 @@ class SimState:
         return self.dog_motion_duration > 0.0
 
     def apply_event(self, event: SimEvent) -> None:
-        abnormal_replay = bool(
-            event.payload.get("_ui_abnormal_replay")
-        )
-        if not abnormal_replay:
-            self.processed_events += 1
-            plain_time_tick = (
-                event.kind == "simulation_time_state"
-                and event.payload.get("event_type") == "TIME_TICK"
-            )
-            if not plain_time_tick and event.kind != "ros_graph_state":
-                self.event_log.append((event.received_at, event.summary))
-                self._record_ui_event(event)
-            local_ui_action = (
-                event.kind in {"action_goal", "action_feedback", "action_result"}
-                and str(event.payload.get("goal_id") or "").startswith("local-")
-            )
-            if not local_ui_action and event.kind != "ros_graph_state":
-                topic_stats = self.topic_stats.setdefault(
-                    event.topic,
-                    TopicStats(),
-                )
-                topic_stats.count += 1
-                topic_stats.last_received_at = event.received_at
-                topic_stats.last_summary = event.summary
-                topic_stats.recent_received_at.append(event.received_at)
+        """Apply one normalized event on the Arcade thread."""
 
-        action_event_kinds = {"action_goal", "action_feedback", "action_result"}
-        abnormal_deferred_kinds = {
-            *action_event_kinds,
-            "behavior_result_event",
-        }
+        abnormal_replay = bool(event.payload.get("_ui_abnormal_replay"))
+        if not abnormal_replay:
+            self._record_event_receipt(event)
+
+        if self._defer_abnormal_event(event, abnormal_replay):
+            return
+
+        if event.kind in _ACTION_EVENT_KINDS:
+            if self._should_ignore_action_event(event):
+                return
+            self._apply_action_event(event)
+            return
+
+        if event.kind in _SYSTEM_EVENT_KINDS:
+            self._apply_system_event(event)
+            return
+
+        if event.kind in _PERCEPTION_EVENT_KINDS:
+            self._apply_perception_event(event)
+            return
+
+        if event.kind in _INTERNAL_STATE_EVENT_KINDS:
+            self._apply_internal_state_event(event)
+            return
+
+        if event.kind == "behavior_result_event":
+            self._apply_behavior_result(event)
+
+    def _record_event_receipt(self, event: SimEvent) -> None:
+        self.processed_events += 1
+        plain_time_tick = (
+            event.kind == "simulation_time_state"
+            and event.payload.get("event_type") == "TIME_TICK"
+        )
+        if not plain_time_tick and event.kind != "ros_graph_state":
+            self.event_log.append((event.received_at, event.summary))
+            self._record_ui_event(event)
+
+        local_ui_action = (
+            event.kind in _ACTION_EVENT_KINDS
+            and str(event.payload.get("goal_id") or "").startswith("local-")
+        )
+        if local_ui_action or event.kind == "ros_graph_state":
+            return
+
+        topic_stats = self.topic_stats.setdefault(event.topic, TopicStats())
+        topic_stats.count += 1
+        topic_stats.last_received_at = event.received_at
+        topic_stats.last_summary = event.summary
+        topic_stats.recent_received_at.append(event.received_at)
+
+    def _defer_abnormal_event(
+        self,
+        event: SimEvent,
+        abnormal_replay: bool,
+    ) -> bool:
         if (
             self.ui_abnormal_simulation_active
             and not abnormal_replay
-            and event.kind in abnormal_deferred_kinds
+            and event.kind in _ABNORMAL_DEFERRED_EVENT_KINDS
         ):
             # Abnormal mode owns the visible card, but the action system may
             # keep publishing. Preserve those packets so clearing the
             # simulation can continue from the paused presentation.
             self.ui_abnormal_deferred_events.append(event)
-            return
+            return True
+
         if (
             self.ui_abnormal_replay_active
             and not abnormal_replay
-            and event.kind in abnormal_deferred_kinds
+            and event.kind in _ABNORMAL_DEFERRED_EVENT_KINDS
         ):
             incoming_goal = _first_text(event.payload.get("goal_id"))
             if (
@@ -338,7 +389,7 @@ class SimState:
                 or incoming_goal == self.ui_abnormal_replay_goal_id
             ):
                 self.ui_abnormal_deferred_events.append(event)
-                return
+                return True
             # A genuinely new Goal preempts the paused one. Do not let an old
             # replay later overwrite this higher-priority execution.
             self.ui_abnormal_deferred_events.clear()
@@ -346,68 +397,73 @@ class SimState:
             self.ui_abnormal_replay_goal_id = None
             self.ui_abnormal_replay_next_at = 0.0
 
-        if event.kind in action_event_kinds:
-            incoming_goal = _first_text(event.payload.get("goal_id"))
-            if (
-                incoming_goal
-                and incoming_goal in self.ui_stopped_external_goal_ids
-            ):
-                # Stop is authoritative for the UI presentation. The behavior
-                # tree still receives CMD_STOP and owns the real Action cancel,
-                # but late packets from the interrupted command must not make
-                # its old movement or pose reappear.
-                return
-            if (
-                event.kind == "action_feedback"
-                and incoming_goal
-                and incoming_goal == self.ui_follow_suppressed_goal_id
-            ):
-                # A UI follow timeout is authoritative for presentation even
-                # if the external executor has not canceled its Goal yet.
-                return
-            interrupted_goal = self.ui_abnormal_interrupted_goal_id
-            if interrupted_goal and (
-                incoming_goal == interrupted_goal
-                or (
-                    incoming_goal is None
-                    and event.kind in {"action_feedback", "action_result"}
-                )
-            ):
-                # The action that was visible when abnormal mode began must
-                # not spring back into view after the simulation is cleared.
-                if event.kind == "action_result":
-                    self.ui_abnormal_interrupted_goal_id = None
-                return
-            if (
-                event.kind == "action_goal"
-                and incoming_goal
-                and interrupted_goal
-                and incoming_goal != interrupted_goal
-            ):
+        return False
+
+    def _should_ignore_action_event(self, event: SimEvent) -> bool:
+        incoming_goal = _first_text(event.payload.get("goal_id"))
+        if incoming_goal and incoming_goal in self.ui_stopped_external_goal_ids:
+            # Stop is authoritative for the UI presentation. The behavior
+            # tree still receives CMD_STOP and owns the real Action cancel,
+            # but late packets from the interrupted command must not make
+            # its old movement or pose reappear.
+            return True
+
+        if (
+            event.kind == "action_feedback"
+            and incoming_goal
+            and incoming_goal == self.ui_follow_suppressed_goal_id
+        ):
+            # A UI follow timeout is authoritative for presentation even
+            # if the external executor has not canceled its Goal yet.
+            return True
+
+        interrupted_goal = self.ui_abnormal_interrupted_goal_id
+        if interrupted_goal and (
+            incoming_goal == interrupted_goal
+            or (
+                incoming_goal is None
+                and event.kind in {"action_feedback", "action_result"}
+            )
+        ):
+            # The action that was visible when abnormal mode began must
+            # not spring back into view after the simulation is cleared.
+            if event.kind == "action_result":
                 self.ui_abnormal_interrupted_goal_id = None
+            return True
 
-            food_goal = self.ui_food_wait_goal_id
-            if (
-                event.kind == "action_goal"
-                and incoming_goal
-                and food_goal
-                and incoming_goal != food_goal
-            ):
-                # A new goal is allowed to preempt food waiting/eating.
-                self.clear_food_gate()
-            elif (
-                event.kind in {"action_feedback", "action_result"}
-                and food_goal
-                and (incoming_goal is None or incoming_goal == food_goal)
-                and (
-                    self.ui_food_waiting
-                    or self.ui_food_eating_until > time.monotonic()
-                )
-            ):
-                # Keep stale executor feedback from bypassing the empty-bowl
-                # wait or ending the short resumed-eating presentation.
-                return
+        if (
+            event.kind == "action_goal"
+            and incoming_goal
+            and interrupted_goal
+            and incoming_goal != interrupted_goal
+        ):
+            self.ui_abnormal_interrupted_goal_id = None
 
+        food_goal = self.ui_food_wait_goal_id
+        if (
+            event.kind == "action_goal"
+            and incoming_goal
+            and food_goal
+            and incoming_goal != food_goal
+        ):
+            # A new goal is allowed to preempt food waiting/eating.
+            self.clear_food_gate()
+        elif (
+            event.kind in {"action_feedback", "action_result"}
+            and food_goal
+            and (incoming_goal is None or incoming_goal == food_goal)
+            and (
+                self.ui_food_waiting
+                or self.ui_food_eating_until > time.monotonic()
+            )
+        ):
+            # Keep stale executor feedback from bypassing the empty-bowl
+            # wait or ending the short resumed-eating presentation.
+            return True
+
+        return False
+
+    def _apply_system_event(self, event: SimEvent) -> None:
         if event.kind == "simulation_time_state":
             self.simulation_time_state = event.payload
             self.simulation_time_received_at = event.received_at
@@ -453,6 +509,19 @@ class SimState:
                 self.action_phase = "eating_authorized"
             return
 
+        if event.kind == "manual_injection":
+            self.manual_injection_count += 1
+            self.last_manual_injection = {
+                **event.payload,
+                "received_at": event.received_at,
+            }
+            return
+
+        if event.kind == "action_server_state":
+            self.action_server_available = bool(event.payload.get("available"))
+            self.action_server_message = str(event.payload.get("message") or "-")
+
+    def _apply_perception_event(self, event: SimEvent) -> None:
         if event.kind == "visual_event":
             self.latest_visual_event = {
                 **event.payload,
@@ -463,27 +532,18 @@ class SimState:
                 self.active_target = active_target
             return
 
-        if event.kind == "audio_event":
-            self.latest_audio_event = {
-                **event.payload,
-                "received_at": event.received_at,
-            }
-            self.audio_wake_angle = None
-            if (
-                event.payload.get("event_type") == "EVT_VOICE_CALL_NAME"
-                and event.payload.get("wake_angle") is not None
-            ):
-                self.audio_wake_angle = _to_float(event.payload.get("wake_angle"))
-            return
+        self.latest_audio_event = {
+            **event.payload,
+            "received_at": event.received_at,
+        }
+        self.audio_wake_angle = None
+        if (
+            event.payload.get("event_type") == "EVT_VOICE_CALL_NAME"
+            and event.payload.get("wake_angle") is not None
+        ):
+            self.audio_wake_angle = _to_float(event.payload.get("wake_angle"))
 
-        if event.kind == "manual_injection":
-            self.manual_injection_count += 1
-            self.last_manual_injection = {
-                **event.payload,
-                "received_at": event.received_at,
-            }
-            return
-
+    def _apply_internal_state_event(self, event: SimEvent) -> None:
         if event.kind == "internal_need_state":
             self.internal_need_state = _merge_named_state_payload(
                 self.internal_need_state,
@@ -526,294 +586,323 @@ class SimState:
             self.personality_state = event.payload
             return
 
-        if event.kind == "behavior_result_event":
-            self.behavior_result_event = event.payload
-            self.recent_behavior_results.appendleft(event.payload)
-            if (
-                self.ui_food_waiting
-                or self.ui_food_eating_until > time.monotonic()
-            ):
-                # The action system/behavior tree may consider the original
-                # food goal complete even though the UI bowl was empty. Keep
-                # the result in diagnostics, but do not let it release the
-                # dog from its bowl-side wait or resumed eating presentation.
-                self.action_status = "running"
-                self.action_result_at = None
-                self._append_action_event(
-                    event,
-                    "food_wait",
-                    "empty bowl; continue waiting for food",
-                )
-                return
-            behavior_name = event.payload.get("behavior_name")
-            action_type = event.payload.get("action_type")
-            self.active_behavior = _first_text(behavior_name, action_type)
-            self.action_status = _derive_action_status(event.payload)
-            self.action_trigger_reason = _behavior_result_reason(event.payload)
-            self._append_action_event(event, "behavior_result", self.action_trigger_reason)
-
-        if event.kind == "action_server_state":
-            self.action_server_available = bool(event.payload.get("available"))
-            self.action_server_message = str(event.payload.get("message") or "-")
+    def _apply_behavior_result(self, event: SimEvent) -> None:
+        self.behavior_result_event = event.payload
+        self.recent_behavior_results.appendleft(event.payload)
+        if self.ui_food_waiting or self.ui_food_eating_until > time.monotonic():
+            # The action system/behavior tree may consider the original
+            # food goal complete even though the UI bowl was empty. Keep
+            # the result in diagnostics, but do not let it release the
+            # dog from its bowl-side wait or resumed eating presentation.
+            self.action_status = "running"
+            self.action_result_at = None
+            self._append_action_event(
+                event,
+                "food_wait",
+                "empty bowl; continue waiting for food",
+            )
             return
 
+        behavior_name = event.payload.get("behavior_name")
+        action_type = event.payload.get("action_type")
+        self.active_behavior = _first_text(behavior_name, action_type)
+        self.action_status = _derive_action_status(event.payload)
+        self.action_trigger_reason = _behavior_result_reason(event.payload)
+        self._append_action_event(
+            event,
+            "behavior_result",
+            self.action_trigger_reason,
+        )
+
+    def _apply_action_event(self, event: SimEvent) -> None:
         if event.kind == "action_goal":
-            previous_goal = self.action_goal_id
-            previous_behavior = self.active_behavior
-            incoming_goal = _first_text(event.payload.get("goal_id"))
-            if incoming_goal:
-                if incoming_goal not in self.action_executions:
-                    self.action_execution_sequence += 1
-                self.action_executions[incoming_goal] = {
-                    **event.payload,
-                    "status": "pending",
-                    "received_at": event.received_at,
-                    "sequence": self.action_executions.get(
-                        incoming_goal,
-                        {},
-                    ).get(
-                        "sequence",
-                        self.action_execution_sequence,
-                    ),
-                }
-            if (
-                incoming_goal
-                and previous_goal
-                and incoming_goal != previous_goal
-                and self.action_status in {"pending", "running"}
-            ):
-                # Keep the active execution card stable.  The new Goal remains
-                # pending in the per-goal map until its first Feedback proves
-                # that the executor has switched to it.
-                self._append_action_event(
-                    event,
-                    "queued",
-                    f"{event.payload.get('behavior_name') or '-'} pending",
-                )
-                return
-            if self.action_status == "running" and previous_goal and previous_goal != _first_text(event.payload.get("goal_id")):
-                self.action_transition = f"preempt {previous_behavior or '-'}"
-                self._append_action_event(event, "preempt", self.action_transition)
-            else:
-                self.action_transition = "started"
-            self.action_goal_id = _first_text(event.payload.get("goal_id"))
-            if self.action_goal_id:
-                self.action_active_sequence = _to_int(
-                    self.action_executions.get(
-                        self.action_goal_id,
-                        {},
-                    ).get("sequence")
-                ) or self.action_active_sequence
-            self.action_behavior_id = _first_text(event.payload.get("behavior_id"))
-            self.active_behavior = _first_text(event.payload.get("behavior_name"))
-            self.action_status = str(
-                event.payload.get("status") or "pending"
-            ).lower()
-            self.action_progress = 0.0
-            self.action_visual_progress = 0.0
-            self.action_visual_progress_start = 0.0
-            self.action_current_action = _first_text(event.payload.get("current_action")) or "-"
-            self.action_unit_type = _infer_unit_type(self.action_current_action)
-            if self.action_unit_type not in {"policy", "modifier"}:
-                self.action_visual_action = self.action_current_action
-            else:
-                self.action_visual_action = "-"
-            self.action_pending_visual_action = None
-            self.action_message = "goal accepted; waiting for Stage feedback"
-            self.action_result = "-"
-            self.action_reason = "-"
-            self.action_reward = None
-            self.action_priority_level = _to_int(event.payload.get("priority_level"))
-            self.action_params = _dict(event.payload.get("params"))
-            if not self.action_params:
-                self.action_params = _json_dict(event.payload.get("params_json"))
-            self._apply_action_context()
-            self.action_completed_stages = []
-            self.action_executed_units = []
-            self.action_started_at = event.received_at
-            self.action_updated_at = event.received_at
-            self.action_result_at = None
-            self.action_phase = "pending"
-            self.action_target_label = _infer_target_label(self.active_behavior, self.action_current_action)
-            self.action_trigger_reason = _infer_trigger_reason(self, event.payload)
-            self.action_stage_index, self.action_stage_total, self.action_stage_label = _extract_stage(
-                event.payload,
-                self.action_progress,
-                self.action_current_action,
-                self.active_behavior,
-            )
-            self.recent_action_steps.clear()
-            if self.action_current_action != "-":
-                self.recent_action_steps.append((event.received_at, self.action_current_action))
-            self._append_action_event(event, "goal", f"{self.active_behavior or '-'} <- {self.action_trigger_reason}")
+            self._apply_action_goal(event)
             return
 
         if event.kind == "action_feedback":
-            incoming_goal = _first_text(event.payload.get("goal_id"))
-            execution: dict[str, Any] | None = None
-            if incoming_goal:
-                execution = self.action_executions.get(incoming_goal)
-                if execution is None:
-                    # Goal debug packets are volatile and may be emitted before
-                    # the UI starts. A live Feedback packet is authoritative
-                    # enough to reconstruct that execution and preempt a local
-                    # autonomous preview.
-                    if (
-                        self.action_goal_id
-                        and incoming_goal != self.action_goal_id
-                        and not str(self.action_goal_id).startswith("local-")
-                    ):
-                        return
-                    self.action_execution_sequence += 1
-                    execution = {
-                        "sequence": self.action_execution_sequence,
-                    }
-                    self.action_executions[incoming_goal] = execution
-                execution.update(event.payload)
-                execution["status"] = "running"
-                execution["received_at"] = event.received_at
-            if (
-                incoming_goal
-                and self.action_goal_id
-                and incoming_goal != self.action_goal_id
-            ):
-                incoming_sequence = _to_int(
-                    (execution or {}).get("sequence")
-                ) or 0
-                if incoming_sequence <= self.action_active_sequence:
-                    return
-                pending_goal = execution or {}
-                self.action_goal_id = incoming_goal
-                self.action_active_sequence = incoming_sequence
-                self.action_behavior_id = _first_text(
-                    pending_goal.get("behavior_id")
-                )
-                self.active_behavior = _first_text(
-                    pending_goal.get("behavior_name")
-                )
-                self.action_priority_level = _to_int(
-                    pending_goal.get("priority_level")
-                )
-                self.action_params = _dict(pending_goal.get("params"))
-                if not self.action_params:
-                    self.action_params = _json_dict(
-                        pending_goal.get("params_json")
-                    )
-                self._apply_action_context()
-                self.action_started_at = _to_float(
-                    pending_goal.get("received_at")
-                ) or event.received_at
-                self.action_transition = "activated by feedback"
-                self.action_result = "-"
-                self.action_reason = "-"
-            motion_queued = self._apply_virtual_motion(event.payload, event.received_at)
-            self.action_goal_id = _first_text(event.payload.get("goal_id"), self.action_goal_id)
-            if incoming_goal and not self.action_active_sequence:
-                self.action_active_sequence = _to_int(
-                    (execution or {}).get("sequence")
-                ) or 0
-            self.action_behavior_id = _first_text(
-                event.payload.get("behavior_id"), self.action_behavior_id
-            )
-            self.active_behavior = _first_text(
-                event.payload.get("behavior_name"), self.active_behavior
-            )
-            self.action_status = str(event.payload.get("status") or "running").lower()
-            self.action_progress = _normalized_progress(event.payload.get("progress"))
-            current_action = _first_text(
-                event.payload.get("current_action"), self.action_current_action
-            ) or "-"
-            if current_action != "-" and current_action != self.action_current_action:
-                self.recent_action_steps.append((event.received_at, current_action))
-                self._append_action_event(event, "stage", current_action)
-            self.action_current_action = current_action
-            self.action_unit_type = _infer_unit_type(current_action)
-            self._update_visual_action(current_action, motion_queued)
-            if not motion_queued:
-                self.action_visual_progress = self.action_progress
-            self.action_message = _first_text(event.payload.get("message")) or "-"
-            safe_to_interrupt = event.payload.get("safe_to_interrupt")
-            self.action_safe_to_interrupt = (
-                _to_bool(safe_to_interrupt) if safe_to_interrupt is not None else None
-            )
-            self.action_updated_at = event.received_at
-            self.action_stage_index, self.action_stage_total, self.action_stage_label = _extract_stage(
-                event.payload,
-                self.action_progress,
-                self.action_current_action,
-                self.active_behavior,
-            )
-            self.action_phase = (
-                _first_text(event.payload.get("phase"))
-                or "stage_completed"
-            )
-            self.action_target_label = (
-                _first_text(event.payload.get("target_label"))
-                or _infer_target_label(self.active_behavior, self.action_current_action)
-            )
-            if not self.action_trigger_reason or self.action_trigger_reason == "-":
-                self.action_trigger_reason = _infer_trigger_reason(self, event.payload)
-            self.gate_food_action(current_action, motion_queued=motion_queued)
+            self._apply_action_feedback(event)
             return
 
-        if event.kind == "action_result":
-            incoming_goal = _first_text(event.payload.get("goal_id"))
-            if (
-                incoming_goal
-                and self.action_goal_id
-                and incoming_goal != self.action_goal_id
-            ):
-                self.action_executions.pop(incoming_goal, None)
-                return
-            motion_queued = self._apply_virtual_motion(event.payload, event.received_at)
-            self.action_goal_id = _first_text(event.payload.get("goal_id"), self.action_goal_id)
-            self.action_behavior_id = _first_text(
-                event.payload.get("behavior_id"), self.action_behavior_id
+        self._apply_action_result(event)
+
+    def _apply_action_goal(self, event: SimEvent) -> None:
+        previous_goal = self.action_goal_id
+        previous_behavior = self.active_behavior
+        incoming_goal = _first_text(event.payload.get("goal_id"))
+        if incoming_goal:
+            if incoming_goal not in self.action_executions:
+                self.action_execution_sequence += 1
+            self.action_executions[incoming_goal] = {
+                **event.payload,
+                "status": "pending",
+                "received_at": event.received_at,
+                "sequence": self.action_executions.get(
+                    incoming_goal,
+                    {},
+                ).get(
+                    "sequence",
+                    self.action_execution_sequence,
+                ),
+            }
+        if (
+            incoming_goal
+            and previous_goal
+            and incoming_goal != previous_goal
+            and self.action_status in {"pending", "running"}
+        ):
+            # Keep the active execution card stable.  The new Goal remains
+            # pending in the per-goal map until its first Feedback proves
+            # that the executor has switched to it.
+            self._append_action_event(
+                event,
+                "queued",
+                f"{event.payload.get('behavior_name') or '-'} pending",
             )
-            self.active_behavior = _first_text(
-                event.payload.get("behavior_name"), self.active_behavior
-            )
-            result_action = _first_text(
-                event.payload.get("failed_action"),
-                event.payload.get("current_action"),
-                self.action_current_action,
-            ) or "-"
-            self.action_current_action = result_action
-            self.action_unit_type = _infer_unit_type(result_action)
-            self._update_visual_action(result_action, motion_queued)
-            status = str(event.payload.get("status") or "").upper()
-            result = str(event.payload.get("result") or status or "").lower()
-            self.action_status = _result_status(status, result)
-            self.action_result = result or "-"
-            self.action_reason = _first_text(event.payload.get("reason")) or "-"
-            self.action_reward = _to_float(event.payload.get("reward"))
-            self.action_progress = 1.0 if self.action_status == "success" else self.action_progress
-            if not motion_queued:
-                self.action_visual_progress = self.action_progress
-            self.action_result_at = event.received_at
-            self.action_updated_at = event.received_at
-            self.action_phase = _result_phase(status, result)
-            self.action_transition = _result_transition(status, result)
-            self.action_completed_stages = _string_list(event.payload.get("completed_stages"))
-            self.action_executed_units = _string_list(event.payload.get("executed_units"))
-            if self.action_status == "success" and self.action_stage_total:
-                self.action_stage_index = self.action_stage_total
-            self.action_stage_label = self.action_result or self.action_phase
-            self._append_action_event(event, self.action_phase, self.action_reason)
-            for room_object in self.room_objects.values():
-                room_object["active"] = False
-            self.gate_food_action(result_action, motion_queued=motion_queued)
-            if (
-                not self.ui_food_waiting
-                and self.ui_food_eating_until <= 0.0
-                and self.ui_food_wait_goal_id
-                and self.ui_food_wait_goal_id
-                == _first_text(event.payload.get("goal_id"), self.action_goal_id)
-            ):
-                self.clear_food_gate()
-            if incoming_goal:
-                self.action_executions.pop(incoming_goal, None)
             return
+
+        if (
+            self.action_status == "running"
+            and previous_goal
+            and previous_goal != incoming_goal
+        ):
+            self.action_transition = f"preempt {previous_behavior or '-'}"
+            self._append_action_event(event, "preempt", self.action_transition)
+        else:
+            self.action_transition = "started"
+        self.action_goal_id = incoming_goal
+        if self.action_goal_id:
+            self.action_active_sequence = _to_int(
+                self.action_executions.get(
+                    self.action_goal_id,
+                    {},
+                ).get("sequence")
+            ) or self.action_active_sequence
+        self.action_behavior_id = _first_text(event.payload.get("behavior_id"))
+        self.active_behavior = _first_text(event.payload.get("behavior_name"))
+        self.action_status = str(event.payload.get("status") or "pending").lower()
+        self.action_progress = 0.0
+        self.action_visual_progress = 0.0
+        self.action_visual_progress_start = 0.0
+        self.action_current_action = (
+            _first_text(event.payload.get("current_action")) or "-"
+        )
+        self.action_unit_type = _infer_unit_type(self.action_current_action)
+        if self.action_unit_type not in {"policy", "modifier"}:
+            self.action_visual_action = self.action_current_action
+        else:
+            self.action_visual_action = "-"
+        self.action_pending_visual_action = None
+        self.action_message = "goal accepted; waiting for Stage feedback"
+        self.action_result = "-"
+        self.action_reason = "-"
+        self.action_reward = None
+        self.action_priority_level = _to_int(event.payload.get("priority_level"))
+        self.action_params = _dict(event.payload.get("params"))
+        if not self.action_params:
+            self.action_params = _json_dict(event.payload.get("params_json"))
+        self._apply_action_context()
+        self.action_completed_stages = []
+        self.action_executed_units = []
+        self.action_started_at = event.received_at
+        self.action_updated_at = event.received_at
+        self.action_result_at = None
+        self.action_phase = "pending"
+        self.action_target_label = _infer_target_label(
+            self.active_behavior,
+            self.action_current_action,
+        )
+        self.action_trigger_reason = _infer_trigger_reason(self, event.payload)
+        (
+            self.action_stage_index,
+            self.action_stage_total,
+            self.action_stage_label,
+        ) = _extract_stage(
+            event.payload,
+            self.action_progress,
+            self.action_current_action,
+            self.active_behavior,
+        )
+        self.recent_action_steps.clear()
+        if self.action_current_action != "-":
+            self.recent_action_steps.append(
+                (event.received_at, self.action_current_action)
+            )
+        self._append_action_event(
+            event,
+            "goal",
+            f"{self.active_behavior or '-'} <- {self.action_trigger_reason}",
+        )
+
+    def _apply_action_feedback(self, event: SimEvent) -> None:
+        incoming_goal = _first_text(event.payload.get("goal_id"))
+        execution: dict[str, Any] | None = None
+        if incoming_goal:
+            execution = self.action_executions.get(incoming_goal)
+            if execution is None:
+                # Goal debug packets are volatile and may be emitted before
+                # the UI starts. A live Feedback packet is authoritative
+                # enough to reconstruct that execution and preempt a local
+                # autonomous preview.
+                if (
+                    self.action_goal_id
+                    and incoming_goal != self.action_goal_id
+                    and not str(self.action_goal_id).startswith("local-")
+                ):
+                    return
+                self.action_execution_sequence += 1
+                execution = {"sequence": self.action_execution_sequence}
+                self.action_executions[incoming_goal] = execution
+            execution.update(event.payload)
+            execution["status"] = "running"
+            execution["received_at"] = event.received_at
+        if (
+            incoming_goal
+            and self.action_goal_id
+            and incoming_goal != self.action_goal_id
+        ):
+            incoming_sequence = _to_int((execution or {}).get("sequence")) or 0
+            if incoming_sequence <= self.action_active_sequence:
+                return
+            pending_goal = execution or {}
+            self.action_goal_id = incoming_goal
+            self.action_active_sequence = incoming_sequence
+            self.action_behavior_id = _first_text(pending_goal.get("behavior_id"))
+            self.active_behavior = _first_text(pending_goal.get("behavior_name"))
+            self.action_priority_level = _to_int(
+                pending_goal.get("priority_level")
+            )
+            self.action_params = _dict(pending_goal.get("params"))
+            if not self.action_params:
+                self.action_params = _json_dict(pending_goal.get("params_json"))
+            self._apply_action_context()
+            self.action_started_at = (
+                _to_float(pending_goal.get("received_at")) or event.received_at
+            )
+            self.action_transition = "activated by feedback"
+            self.action_result = "-"
+            self.action_reason = "-"
+        motion_queued = self._apply_virtual_motion(event.payload, event.received_at)
+        self.action_goal_id = _first_text(
+            event.payload.get("goal_id"),
+            self.action_goal_id,
+        )
+        if incoming_goal and not self.action_active_sequence:
+            self.action_active_sequence = _to_int(
+                (execution or {}).get("sequence")
+            ) or 0
+        self.action_behavior_id = _first_text(
+            event.payload.get("behavior_id"), self.action_behavior_id
+        )
+        self.active_behavior = _first_text(
+            event.payload.get("behavior_name"), self.active_behavior
+        )
+        self.action_status = str(
+            event.payload.get("status") or "running"
+        ).lower()
+        self.action_progress = _normalized_progress(event.payload.get("progress"))
+        current_action = _first_text(
+            event.payload.get("current_action"), self.action_current_action
+        ) or "-"
+        if current_action != "-" and current_action != self.action_current_action:
+            self.recent_action_steps.append((event.received_at, current_action))
+            self._append_action_event(event, "stage", current_action)
+        self.action_current_action = current_action
+        self.action_unit_type = _infer_unit_type(current_action)
+        self._update_visual_action(current_action, motion_queued)
+        if not motion_queued:
+            self.action_visual_progress = self.action_progress
+        self.action_message = _first_text(event.payload.get("message")) or "-"
+        safe_to_interrupt = event.payload.get("safe_to_interrupt")
+        self.action_safe_to_interrupt = (
+            _to_bool(safe_to_interrupt) if safe_to_interrupt is not None else None
+        )
+        self.action_updated_at = event.received_at
+        (
+            self.action_stage_index,
+            self.action_stage_total,
+            self.action_stage_label,
+        ) = _extract_stage(
+            event.payload,
+            self.action_progress,
+            self.action_current_action,
+            self.active_behavior,
+        )
+        self.action_phase = (
+            _first_text(event.payload.get("phase")) or "stage_completed"
+        )
+        self.action_target_label = (
+            _first_text(event.payload.get("target_label"))
+            or _infer_target_label(self.active_behavior, self.action_current_action)
+        )
+        if not self.action_trigger_reason or self.action_trigger_reason == "-":
+            self.action_trigger_reason = _infer_trigger_reason(self, event.payload)
+        self.gate_food_action(current_action, motion_queued=motion_queued)
+
+    def _apply_action_result(self, event: SimEvent) -> None:
+        incoming_goal = _first_text(event.payload.get("goal_id"))
+        if (
+            incoming_goal
+            and self.action_goal_id
+            and incoming_goal != self.action_goal_id
+        ):
+            self.action_executions.pop(incoming_goal, None)
+            return
+        motion_queued = self._apply_virtual_motion(event.payload, event.received_at)
+        self.action_goal_id = _first_text(
+            event.payload.get("goal_id"), self.action_goal_id
+        )
+        self.action_behavior_id = _first_text(
+            event.payload.get("behavior_id"), self.action_behavior_id
+        )
+        self.active_behavior = _first_text(
+            event.payload.get("behavior_name"), self.active_behavior
+        )
+        result_action = _first_text(
+            event.payload.get("failed_action"),
+            event.payload.get("current_action"),
+            self.action_current_action,
+        ) or "-"
+        self.action_current_action = result_action
+        self.action_unit_type = _infer_unit_type(result_action)
+        self._update_visual_action(result_action, motion_queued)
+        status = str(event.payload.get("status") or "").upper()
+        result = str(event.payload.get("result") or status or "").lower()
+        self.action_status = _result_status(status, result)
+        self.action_result = result or "-"
+        self.action_reason = _first_text(event.payload.get("reason")) or "-"
+        self.action_reward = _to_float(event.payload.get("reward"))
+        self.action_progress = (
+            1.0 if self.action_status == "success" else self.action_progress
+        )
+        if not motion_queued:
+            self.action_visual_progress = self.action_progress
+        self.action_result_at = event.received_at
+        self.action_updated_at = event.received_at
+        self.action_phase = _result_phase(status, result)
+        self.action_transition = _result_transition(status, result)
+        self.action_completed_stages = _string_list(
+            event.payload.get("completed_stages")
+        )
+        self.action_executed_units = _string_list(
+            event.payload.get("executed_units")
+        )
+        if self.action_status == "success" and self.action_stage_total:
+            self.action_stage_index = self.action_stage_total
+        self.action_stage_label = self.action_result or self.action_phase
+        self._append_action_event(event, self.action_phase, self.action_reason)
+        for room_object in self.room_objects.values():
+            room_object["active"] = False
+        self.gate_food_action(result_action, motion_queued=motion_queued)
+        if (
+            not self.ui_food_waiting
+            and self.ui_food_eating_until <= 0.0
+            and self.ui_food_wait_goal_id
+            and self.ui_food_wait_goal_id
+            == _first_text(event.payload.get("goal_id"), self.action_goal_id)
+        ):
+            self.clear_food_gate()
+        if incoming_goal:
+            self.action_executions.pop(incoming_goal, None)
 
     def _adopt_embedded_virtual_time(self, event: SimEvent) -> None:
         """Use the shared timeContext only while the authority Topic is absent."""

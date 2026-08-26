@@ -163,10 +163,8 @@ _BEHAVIOR_BY_EVENT_TYPE = {
     "EVT_VOICE_COMMAND_FETCH": "fetch_object",
     "EVT_VOICE_COMMAND_STOP": "emergency_stop",
 }
-_SPEC_BY_BEHAVIOR = {
-    spec.behavior_name: spec
-    for spec in VOICE_COMMAND_SPECS
-}
+_SPEC_BY_BEHAVIOR = {spec.behavior_name: spec for spec in VOICE_COMMAND_SPECS}
+
 EXTERNAL_COMMAND_BEHAVIORS = frozenset(
     spec.behavior_name
     for spec in VOICE_COMMAND_SPECS
@@ -201,7 +199,6 @@ def behavior_runs_beside_owner(behavior_name: Any) -> bool:
 
 def is_external_command_behavior(behavior_name: Any) -> bool:
     """Return whether a behavior is started by an ordinary owner command."""
-
     return str(behavior_name or "") in EXTERNAL_COMMAND_BEHAVIORS
 
 
@@ -223,21 +220,26 @@ def resolve_voice_command(audio_event: dict[str, Any] | None) -> VoiceCommandSpe
     text = _normalize_text(audio_event.get("asr_text"))
     if not text:
         return None
+
     for spec in VOICE_COMMAND_SPECS:
         if any(_normalize_text(phrase) in text for phrase in spec.phrases):
             return spec
+
     return None
 
 
 def voice_command_display(audio_event: dict[str, Any] | None) -> str:
     if not audio_event:
         return "-"
+
     text = str(audio_event.get("asr_text") or "").strip()
     command = resolve_voice_command(audio_event)
     if command is None:
         return text or "-"
+
     if not text or _normalize_text(text) == _normalize_text(command.label):
         return f"{command.label} → {command.behavior_name}"
+
     return f"{text} → {command.label}"
 
 

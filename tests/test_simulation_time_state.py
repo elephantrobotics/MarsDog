@@ -3,7 +3,7 @@ import unittest
 from marsdog_sim2d import config
 from marsdog_sim2d.parsers import parse_simulation_time_state
 from marsdog_sim2d.sim_state import SimState
-from marsdog_sim2d.widgets import _endpoint_status, _virtual_time_display
+from marsdog_sim2d.views.widgets import _endpoint_status, _virtual_time_display
 
 
 class SimulationTimeStateTests(unittest.TestCase):

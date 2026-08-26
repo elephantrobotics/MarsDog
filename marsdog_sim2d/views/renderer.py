@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import typing
 from copy import copy
 import math
 from pathlib import Path
@@ -11,10 +12,10 @@ from typing import Any
 import arcade
 from arcade.texture_atlas import DefaultTextureAtlas
 
-from . import config
-from .action_visuals import is_text_only_action, visual_for_action
-from .drawing import draw_text
-from .sim_state import SimState
+from marsdog_sim2d import config
+from marsdog_sim2d.action_visuals import is_text_only_action, visual_for_action
+from marsdog_sim2d.components.drawing import draw_text, measure_text
+from marsdog_sim2d.sim_state import SimState
 
 _VIRTUAL_USER_WIDTH = 64.0
 _VIRTUAL_USER_HEIGHT = 154.0
@@ -25,12 +26,16 @@ class WorldRenderer:
     """Draw the center 2D situation view."""
 
     def __init__(self) -> None:
-        asset_root = Path(__file__).with_name("assets")
+        asset_root = Path(__file__).parent.with_name("assets")
+        print(f"{asset_root = }")
         dog_asset_dir = asset_root / "dog"
         self._dog_textures: dict[str, Any] = {}
         self._dog_texture_atlases: dict[str, Any] = {}
         self._user_texture: Any | None = None
         self._room_background_texture: Any | None = None
+        self._food_bowl_texture: typing.Optional[arcade.Texture] = None
+        self._food_bowl_with_food_texture: Any | None = None
+        self._toilet_pad_texture: Any | None = None
         self._texture_atlas_ready = False
         try:
             self._dog_textures = {
@@ -47,6 +52,10 @@ class WorldRenderer:
                     "toilet",
                     "shake",
                     "eat",
+                    "sniff_circle",
+                    "scratch_ground_leave",
+                    "sniff_excrement_leave",
+                    "walk_away_shake_head",
                     "joy_belly",
                     "excite_toy",
                     "anxiety_cower",
@@ -59,6 +68,9 @@ class WorldRenderer:
                     "scratch_food",
                     "burp",
                     "lick_lips_nose",
+                    "walk_away_lie_down",
+                    "sniff_crumbs_leave",
+                    "lick_lips_leave",
                     "carry_bowl",
                     "scratch_ground",
                     "body_rub_object",
@@ -79,17 +91,27 @@ class WorldRenderer:
         except (FileNotFoundError, OSError, RuntimeError):
             self._dog_textures = {}
         try:
-            self._user_texture = arcade.load_texture(
-                asset_root / "human" / "virtual_owner.png"
-            )
+            self._user_texture = arcade.load_texture(asset_root / "human" / "virtual_owner.png")
         except (FileNotFoundError, OSError, RuntimeError):
             self._user_texture = None
         try:
-            self._room_background_texture = arcade.load_texture(
-                asset_root / "backgrounds" / "apartment_floorplan_runtime.png"
-            )
+            self._room_background_texture = arcade.load_texture(asset_root / "backgrounds" / "apartment_floorplan_source.png")
         except (FileNotFoundError, OSError, RuntimeError):
             self._room_background_texture = None
+        try:
+            self._food_bowl_texture = arcade.load_texture(asset_root / "objects" / "marsdog_food_bowl.png")
+        except (FileNotFoundError, OSError, RuntimeError):
+            self._food_bowl_texture = None
+        try:
+            self._food_bowl_with_food_texture = arcade.load_texture(asset_root / "objects" / "marsdog_food_bowl_with_food.png")
+        except (FileNotFoundError, OSError, RuntimeError):
+            self._food_bowl_with_food_texture = None
+        try:
+            self._toilet_pad_texture = arcade.load_texture(
+                asset_root / "objects" / "marsdog_toilet_pad.png"
+            )
+        except (FileNotFoundError, OSError, RuntimeError):
+            self._toilet_pad_texture = None
 
     def draw(self, state: SimState) -> None:
         now = time.time()
@@ -139,6 +161,14 @@ class WorldRenderer:
             ctx.default_atlas.add(self._room_background_texture)
         if self._user_texture is not None:
             ctx.default_atlas.add(self._user_texture)
+
+        for texture in (
+            self._food_bowl_texture,
+            self._food_bowl_with_food_texture,
+            self._toilet_pad_texture,
+        ):
+            if texture is not None:
+                ctx.default_atlas.add(texture)
         self._dog_texture_atlases = {
             pose: DefaultTextureAtlas((512, 512), textures=[texture], ctx=ctx)
             for pose, texture in self._dog_textures.items()
@@ -616,8 +646,9 @@ class WorldRenderer:
             ("动作", state.action_current_action, config.COLORS["accent"]),
             ("目标", _display_scene_label(state.action_target_label), config.COLORS["muted_text"]),
         )
-        y = top - 9
-        value_x = x + 72
+
+        y = top
+        value_x = x + 80
         max_value_chars = max(18, int((width - 84) / 6.2))
         for label, value, color in lines:
             draw_text(label, x + 10, y, config.COLORS["subtle_text"], config.FONT_SIZE_AUX, anchor_y="top")
@@ -838,6 +869,9 @@ class WorldRenderer:
             y += lift
         elif pose == "walk" and state.action_status == "running":
             y += abs(math.sin(now * 8.0)) * 2.5
+        elif pose == "sniff_circle" and state.action_status == "running":
+            x += math.cos(now * 4.2) * 6.0
+            y += math.sin(now * 4.2) * 3.0
 
         if pose == "walk" and state.action_status == "running":
             self._draw_motion_trail(x, state.dog_y, math.radians(state.dog_heading), now)
@@ -891,12 +925,7 @@ class WorldRenderer:
         )
         action_id = str(state.action_current_action or "")
         if is_text_only_action(action_id):
-            _draw_tag(
-                x - 94,
-                y + size / 2 + 24,
-                f"仅文字展示：{_truncate(action_id, 34)}",
-                config.COLORS["warning"],
-            )
+            _draw_tag(x - 94, y + size / 2 + 24, f"仅文字展示：{_truncate(action_id, 34)}", config.COLORS["warning"])
 
     def _draw_motion_trail(
         self,
@@ -1392,7 +1421,7 @@ class WorldRenderer:
             draw_text(
                 text,
                 x + 16,
-                chip_y - 2,
+                chip_y + 3,
                 config.COLORS["text"],
                 config.FONT_SIZE_SMALL,
                 anchor_y="top",
@@ -1455,14 +1484,8 @@ class WorldRenderer:
             if active:
                 arcade.draw_circle_outline(x, y, 27 * pulse, config.COLORS["accent"], 2)
                 arcade.draw_circle_outline(x, y, 37 * pulse, _mix(color, config.COLORS["world_floor"], 0.3), 1)
-            if not active:
-                draw_text(
-                    _truncate(_display_scene_label(label), 15),
-                    x + 16,
-                    y - 5,
-                    config.COLORS["world_muted"],
-                    config.FONT_SIZE_SMALL,
-                )
+            # else:
+            #     draw_text(_truncate(_display_scene_label(label), 15), x + 16, y - 5, config.COLORS["world_muted"], config.FONT_SIZE_SMALL)
 
     def _draw_food_bowl(
         self,
@@ -1474,18 +1497,20 @@ class WorldRenderer:
         has_food: bool,
     ) -> None:
         body = config.COLORS["need"] if active else _mix(config.COLORS["need"], config.COLORS["world_tile"], 0.28)
-        arcade.draw_ellipse_filled(x + 2, y - 3, 32 * pulse, 15 * pulse, (*config.COLORS["shadow"], 80))
-        arcade.draw_ellipse_filled(x, y, 30 * pulse, 16 * pulse, body)
-        arcade.draw_arc_outline(x, y + 3, 30 * pulse, 16 * pulse, config.COLORS["furniture_cream"], 0, 180, 1)
-        if has_food:
+        food_texture = self._food_bowl_with_food_texture if has_food else None
+        bowl_texture = food_texture if food_texture is not None else self._food_bowl_texture
+        if bowl_texture is not None:
+            width = config.FOOD_BOWL_TEXTURE_WIDTH * pulse
+            height = config.FOOD_BOWL_TEXTURE_HEIGHT * pulse
+            arcade.draw_texture_rect(bowl_texture, arcade.LBWH(x - width / 2 + 7, y - height / 2 + 2, width, height))
+        else:
+            arcade.draw_ellipse_filled(x + 2, y - 3, 32 * pulse, 15 * pulse, (*config.COLORS["shadow"], 80))
+            arcade.draw_ellipse_filled(x, y, 30 * pulse, 16 * pulse, body)
+            arcade.draw_arc_outline(x, y + 3, 30 * pulse, 16 * pulse, config.COLORS["furniture_cream"], 0, 180, 1)
+
+        if has_food and food_texture is None:
             food_color = config.COLORS["furniture_wood"]
-            arcade.draw_ellipse_filled(
-                x,
-                y + 2,
-                22 * pulse,
-                9 * pulse,
-                _mix(food_color, config.COLORS["furniture_cream"], 0.18),
-            )
+            arcade.draw_ellipse_filled(x, y + 2, 22 * pulse, 9 * pulse, _mix(food_color, config.COLORS["furniture_cream"], 0.18))
             for dx, dy in (
                 (-8, 2),
                 (-4, 5),
@@ -1495,12 +1520,7 @@ class WorldRenderer:
                 (-1, 6),
                 (6, 7),
             ):
-                arcade.draw_circle_filled(
-                    x + dx * pulse,
-                    y + dy * pulse,
-                    max(1.5, 2.1 * pulse),
-                    food_color,
-                )
+                arcade.draw_circle_filled(x + dx * pulse, y + dy * pulse, max(1.5, 2.1 * pulse), food_color)
 
     def _draw_bed(self, x: float, y: float, active: bool, pulse: float) -> None:
         edge = config.COLORS["success"] if active else config.COLORS["furniture_wood"]
@@ -1512,6 +1532,12 @@ class WorldRenderer:
         arcade.draw_arc_outline(x, y + 1, width - 15, height - 14, _mix(edge, config.COLORS["furniture_cream"], 0.55), 0, 180, 1)
 
     def _draw_toilet_pad(self, x: float, y: float, active: bool, pulse: float) -> None:
+        if self._toilet_pad_texture is not None:
+            width = config.TOILET_PAD_TEXTURE_WIDTH * pulse
+            height = config.TOILET_PAD_TEXTURE_HEIGHT * pulse
+            arcade.draw_texture_rect(self._toilet_pad_texture, arcade.LBWH(x - width / 2, y - height / 2, width, height))
+            return
+
         color = config.COLORS["error"] if active else config.COLORS["world_wall_dark"]
         width = 34 * pulse
         height = 22 * pulse
@@ -1559,15 +1585,12 @@ class WorldRenderer:
         else:
             status = f"已接收 {recent_topics}/{endpoint_count} 个端点"
             color = config.COLORS["success"]
+
         status_x = config.WORLD_LEFT + 18
         _draw_tag(status_x, config.WORLD_TOP - 76, status, color)
         if state.action_status == "running":
-            _draw_tag(
-                status_x,
-                config.WORLD_TOP - 100,
-                f"动作 {state.action_progress * 100:.0f}% {state.action_current_action}",
-                config.COLORS["audio"],
-            )
+            text = f"动作 {state.action_progress * 100:.0f}% {state.action_current_action}"
+            _draw_tag(status_x, config.WORLD_TOP - 100, text, config.COLORS["audio"])
 
     def _draw_world_labels(self, state: SimState) -> None:
         latest_audio = state.latest_audio_event or {}
@@ -1576,30 +1599,15 @@ class WorldRenderer:
 
         left = config.WORLD_LEFT + 16
         top = config.WORLD_TOP - 10
-        width = min(330.0, max(230.0, config.WORLD_WIDTH * 0.38))
-        arcade.draw_lbwh_rectangle_filled(left, top - 46, width, 46, (*config.COLORS["surface"], 224))
-        arcade.draw_lbwh_rectangle_filled(left, top - 46, 4, 46, config.COLORS["accent"])
-        draw_text(
-            "MarsDog 室内调试场景",
-            left + 14,
-            top - 6,
-            config.COLORS["text"],
-            config.FONT_SIZE_TITLE,
-            bold=True,
-            anchor_y="top",
-        )
-        draw_text(
-            _truncate(
-                f"声音={latest_audio.get('event_type') or '-'}  "
-                f"视觉={','.join(visual_events) if visual_events else '-'}",
-                80,
-            ),
-            left + 14,
-            top - 27,
-            config.COLORS["muted_text"],
-            config.FONT_SIZE_AUX,
-            anchor_y="top",
-        )
+
+        height = 50
+        width = config.scene_header_width()
+
+        arcade.draw_lbwh_rectangle_filled(left, top - height, width, height, (*config.COLORS["surface"], 224))
+        arcade.draw_lbwh_rectangle_filled(left, top - height, 4, height, config.COLORS["accent"])
+        draw_text("MarsDog 室内调试场景", left + 14, top, config.COLORS["text"], config.FONT_SIZE_TITLE, bold=True, anchor_y="top")
+        text = _truncate(f"声音={latest_audio.get('event_type') or '-'} 视觉={','.join(visual_events) if visual_events else '-'}", 80)
+        draw_text(text, left + 14, top - 27, config.COLORS["muted_text"], config.FONT_SIZE_AUX, anchor_y="top")
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -1893,11 +1901,7 @@ def _lerp(start: float, end: float, progress: float) -> float:
     return start + (end - start) * progress
 
 
-def _mix(
-    color: tuple[int, int, int],
-    other: tuple[int, int, int],
-    amount: float,
-) -> tuple[int, int, int]:
+def _mix(color: tuple[int, int, int], other: tuple[int, int, int], amount: float) -> tuple[int, int, int]:
     amount = _clamp01(amount)
     return (
         int(color[0] * (1.0 - amount) + other[0] * amount),
@@ -1917,19 +1921,14 @@ def _clamp01(value: float) -> float:
 
 
 def _draw_tag(x: float, y: float, text: str, color: tuple[int, int, int]) -> None:
-    width = min(320, max(88, len(text) * 6 + 18))
-    height = 18
+    text = draw_text(text, x + 18, y, config.COLORS["text"], config.FONT_SIZE_SMALL, anchor_y="top", draw=False)
+
+    height = 20
+    width = (text.content_width or 160) + 29
     arcade.draw_lbwh_rectangle_filled(x, y - height, width, height, (26, 32, 38))
     arcade.draw_lbwh_rectangle_outline(x, y - height, width, height, color, 1)
     arcade.draw_circle_filled(x + 9, y - 9, 3, color)
-    draw_text(
-        text,
-        x + 18,
-        y - 4,
-        config.COLORS["text"],
-        config.FONT_SIZE_SMALL,
-        anchor_y="top",
-    )
+    text.draw()
 
 
 def _truncate(value: str, max_chars: int) -> str:

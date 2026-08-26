@@ -10,6 +10,7 @@ setup(
         package_name: [
             "assets/dog/*.png",
             "assets/human/*.png",
+            "assets/objects/*.png",
             "assets/backgrounds/*.png",
             "assets/config/*.yaml",
         ]
