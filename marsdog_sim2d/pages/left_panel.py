@@ -2,39 +2,111 @@
 
 from __future__ import annotations
 
+import typing as T
 from collections import Counter
 from collections.abc import Callable, Iterable
-from typing import Any
 
 import arcade
 import arcade.gui
 
 from marsdog_sim2d import config
-from marsdog_sim2d.components import (
-    AJsonPreviewer,
-    BBox,
-    arcade_button_style,
+from marsdog_sim2d.components import AJsonPreviewer, BBox, arcade_button_style
+from marsdog_sim2d.controllers.left_panel_controller import (
+    show_toilet_training_control,
 )
-from marsdog_sim2d.event_injector import (
+from marsdog_sim2d.simevent.event_injector import (
     SCENARIOS,
+    TACTILE_EVENT_SPECS,
     field_max_chars,
     resolve_emotion_output,
     resolve_need_output,
 )
-from marsdog_sim2d.sim_state import SimState
-from marsdog_sim2d.views.widgets import (
-    EVENT_SOURCES,
-    INPUT_TABS,
-    SCENARIO_LABELS,
-    SELECT_OPTIONS,
-    STATE_TYPES,
-    TAB_LABELS,
-    event_parameter_fields,
-    event_type_field,
-    option_label,
+from marsdog_sim2d.simevent.external_damage_simulation import (
+    EXTERNAL_DAMAGE_SPECS,
+    build_external_damage_payload,
 )
+from marsdog_sim2d.simevent.injection import InjectionFormState
+from marsdog_sim2d.simevent.sim_state import SimState
+from marsdog_sim2d.pages.widgets import option_label
 
+INPUT_TAB_LABELS = {
+    "Event": "事件",
+    "State": "状态",
+    "Command": "指令",
+    "Scenario": "场景",
+}
 
+EVENT_SOURCES = ("Audio", "Tactile", "Damage", "Vision", "Result")
+STATE_TYPES = ("Need", "Emotion", "Personality")
+SCENARIO_LABELS = {
+    "high_hunger": ("高饥饿", "模拟饥饿满溢并触发觅食"),
+    "low_energy": ("低能量", "模拟能量不足并触发充电"),
+    "owner_calls": ("主人呼叫", "主人出现并呼叫 MarsDog"),
+    "joy_interaction": ("快乐互动", "主人出现并注入高快乐情绪"),
+    "fear_response": ("恐惧反应", "陌生人出现并注入高恐惧情绪"),
+    "explore_toy": ("探索玩具", "发现玩具并触发探索需求"),
+}
+
+SELECT_OPTIONS: dict[str, tuple[str, ...]] = {
+    "audio_event_type": (
+        "EVT_VOICE_COMMAND_KNOWN",
+        "EVT_VOICE_COMMAND_UNKNOWN",
+        "EVT_VOICE_CALL_NAME",
+        "EVT_VOICE_MASTER_ID",
+        "EVT_VOICE_STRANGER_ID",
+        "EVT_VOICE_PRAISE",
+        "EVT_VOICE_SCOLD",
+    ),
+    "audio_command_id": (
+        "CMD_SIT",
+        "CMD_COME_HERE",
+        "CMD_HAND",
+        "CMD_FOLLOW",
+        "CMD_STOP",
+        "CMD_LIE_DOWN",
+        "CMD_STAND_UP",
+        "CMD_WAIT",
+        "CMD_GIVE_PAW",
+        "CMD_HIGH_FIVE",
+        "CMD_ROLL_OVER",
+        "CMD_SPIN",
+        "CMD_RETURN_TO_OWNER",
+        "CMD_DROP_OBJECT",
+        "CMD_PLAY_DEAD",
+        "CMD_BRING_OBJECT",
+        "CMD_FETCH",
+    ),
+    "tactile_event_type": tuple(TACTILE_EVENT_SPECS),
+    "damage_event_type": tuple(EXTERNAL_DAMAGE_SPECS),
+    "damage_confirmed": ("unconfirmed", "confirmed"),
+    "vision_events": (
+        "EVT_VISION_MASTER",
+        "EVT_VISION_STRANGER",
+        "EVT_VISION_MASTER_HAPPY",
+        "EVT_VISION_MASTER_SAD",
+        "EVT_VISION_MASTER_NEUTRAL",
+        "EVT_VISION_FALL",
+        "EVT_VISION_STOP_GESTURE",
+        "EVT_VISION_TOY",
+        "EVT_VISION_FOOD",
+        "EVT_VISION_ANIMAL_CALM",
+        "EVT_VISION_ANIMAL_GREET",
+        "EVT_VISION_ANIMAL_PLAY",
+        "EVT_VISION_ANIMAL_BOUNDARY",
+    ),
+    "need_demand": config.DEMAND_NAMES,
+    "toilet_spot_taught": ("false", "true"),
+    "emotion_name": config.EMOTION_NAMES,
+    "result_type": ("STARTED", "COMPLETED", "FAILED", "TIMEOUT", "INTERRUPTED", "CANCELLED"),
+    "personality_profile": (
+        "Custom",
+        "GentleCompanion",
+        "SunnyExplorer",
+        "LoyalGuardian",
+        "ProudIndependent",
+    ),
+    "personality_trait": ("A", "O", "E", "C"),
+}
 PanelActionHandler = Callable[[dict[str, object]], object]
 
 QUICK_COMMANDS = (
@@ -53,6 +125,43 @@ QUICK_COMMANDS = (
 )
 
 
+def event_parameter_fields(group: str) -> tuple[tuple[str, str, str], ...]:
+    fields = {
+        "Audio": (
+            ("audio_asr_text", "ASR 文本", "input"),
+            ("audio_command_id", "语音指令", "select"),
+            ("audio_speaker_id", "说话人", "input"),
+            ("audio_confidence", "置信度", "input"),
+            ("audio_wake_angle", "声源角度", "input"),
+        ),
+        "Vision": (
+            ("vision_identity", "目标 ID", "input"),
+            ("vision_pose", "姿态", "input"),
+            ("vision_object", "物体标签", "input"),
+        ),
+        "Damage": (
+            ("damage_risk_score", "风险值 (0-100)", "input"),
+            ("damage_confirmed", "故障确认", "select"),
+        ),
+        "Result": (
+            ("result_action_type", "动作类型", "input"),
+            ("result_demand_type", "需求类型", "input"),
+            ("result_metadata", "Metadata", "input"),
+        ),
+    }
+    return fields.get(group, ())
+
+
+def event_type_field(group: str) -> str | None:
+    return {
+        "Audio": "audio_event_type",
+        "Tactile": "tactile_event_type",
+        "Damage": "damage_event_type",
+        "Vision": "vision_events",
+        "Result": "result_type",
+    }.get(group)
+
+
 class LeftControlPanel:
     """Render and dispatch the left panel through Arcade's native GUI system."""
 
@@ -60,15 +169,16 @@ class LeftControlPanel:
         self,
         window: arcade.Window,
         state: SimState,
+        form: InjectionFormState,
         action_handler: PanelActionHandler,
-        manager: arcade.gui.UIManager | None = None,
+        manager: T.Optional[arcade.gui.UIManager] = None,
     ) -> None:
         self._state = state
+        self._form = form
         self._action_handler = action_handler
         self._window = window
         self._manager = manager or arcade.gui.UIManager(window)
-        if manager is None:
-            self._manager.enable()
+        self._manager.enable()
         self._manager_enabled = True
         self._mouse_cursor_name = "default"
         self._signature: tuple[object, ...] | None = None
@@ -78,10 +188,7 @@ class LeftControlPanel:
         self._payload_title: arcade.gui.UILabel | None = None
         self._topic_label: arcade.gui.UILabel | None = None
         self._input_widgets: dict[str, arcade.gui.UIInputText] = {}
-        self._dropdown_widgets: dict[
-            str,
-            tuple[arcade.gui.UIDropdown, dict[str, str], dict[str, str]],
-        ] = {}
+        self._dropdown_widgets: dict[str, tuple[arcade.gui.UIDropdown, dict[str, str], dict[str, str]]] = {}
 
     def draw(self) -> None:
         """Synchronize the native controls and draw them above the custom HUD."""
@@ -107,22 +214,11 @@ class LeftControlPanel:
         self._set_enabled(False)
         self._set_mouse_cursor("default")
 
-    def update_mouse_cursor(
-        self,
-        x: float,
-        y: float,
-        fallback_cursor_name: str = "default",
-    ) -> None:
+    def update_mouse_cursor(self, x: float, y: float, fallback_cursor_name: str = "default") -> None:
         """Show the native cursor matching the topmost interactive control."""
-        widgets = (
-            self._manager.get_widgets_at((x, y), layer=None)
-            if self._manager_enabled
-            else ()
-        )
+        widgets = self._manager.get_widgets_at((x, y), layer=None) if self._manager_enabled else ()
         cursor_name = _cursor_name_for_widgets(widgets)
-        self._set_mouse_cursor(
-            fallback_cursor_name if cursor_name == "default" else cursor_name
-        )
+        self._set_mouse_cursor(fallback_cursor_name if cursor_name == "default" else cursor_name)
 
     def request_rebuild(self) -> None:
         """Recreate controls after an action changes panel structure."""
@@ -145,10 +241,10 @@ class LeftControlPanel:
             round(config.BOTTOM_LOG_HEIGHT, 2),
             round(config.TOP_BAR_BOTTOM, 2),
             self._state.ui_left_collapsed,
-            self._state.ui_input_tab,
-            self._state.event_injector_group,
-            self._state.ui_selected_scenario,
-            len(self._state.ui_preview_topics),
+            self._form.tab,
+            self._form.group,
+            self._form.selected_scenario,
+            len(self._form.preview_topics),
             placement.get("group"),
             self._state.ui_payload_preview_expanded,
         )
@@ -177,11 +273,7 @@ class LeftControlPanel:
         self._add_button(x, top - 28, 32, 28, ">>", "expand_left")
         top -= 56
 
-        for tab in INPUT_TABS:
-            label = {"Event": "事", "State": "态", "Command": "令", "Scenario": "景"}.get(
-                tab,
-                tab[0],
-            )
+        for tab, label in INPUT_TAB_LABELS.items():
             self._add_button(
                 x,
                 top - 30,
@@ -189,7 +281,7 @@ class LeftControlPanel:
                 30,
                 label,
                 "collapsed_tab",
-                active=self._state.ui_input_tab == tab,
+                active=self._form.tab == tab,
                 tab=tab,
             )
             top -= 40
@@ -210,33 +302,35 @@ class LeftControlPanel:
         top -= 38
 
         tab_gap = 2
-        tab_width = (width - tab_gap * (len(INPUT_TABS) - 1)) / len(INPUT_TABS)
+        input_tab_size = len(INPUT_TAB_LABELS)
+        tab_width = (width - tab_gap * (input_tab_size - 1)) / input_tab_size
         tab_y = top - config.TAB_HEIGHT
-        for index, tab in enumerate(INPUT_TABS):
+
+        for index, (tab, label) in enumerate(INPUT_TAB_LABELS.items()):
             self._add_button(
                 x + index * (tab_width + tab_gap),
                 tab_y,
                 tab_width,
                 config.TAB_HEIGHT,
-                TAB_LABELS.get(tab, tab),
+                label,
                 "input_tab",
-                active=self._state.ui_input_tab == tab,
+                active=self._form.tab == tab,
                 tab=tab,
             )
         top = tab_y - 8
         bottom = config.BOTTOM_LOG_HEIGHT + 10
 
-        if self._state.ui_input_tab == "State":
+        if self._form.tab == "State":
             self._build_state_tab(x, top, width, bottom)
-        elif self._state.ui_input_tab == "Command":
+        elif self._form.tab == "Command":
             self._build_command_tab(x, top, width, bottom)
-        elif self._state.ui_input_tab == "Scenario":
+        elif self._form.tab == "Scenario":
             self._build_scenario_tab(x, top, width, bottom)
         else:
             self._build_event_tab(x, top, width, bottom)
 
     def _build_event_tab(self, x: float, top: float, width: float, bottom: float) -> None:
-        group = self._state.event_injector_group if self._state.event_injector_group in EVENT_SOURCES else "Audio"
+        group = self._form.group if self._form.group in EVENT_SOURCES else "Audio"
         top = self._add_dropdown_row(
             "event_source",
             "事件来源",
@@ -252,8 +346,8 @@ class LeftControlPanel:
             top = self._add_dropdown_row(
                 "event_type",
                 "事件类型",
-                self._state.event_injector_fields.get(field_id, "-"),
-                SELECT_OPTIONS.get(field_id, (self._state.event_injector_fields.get(field_id, "-"),),),
+                self._form.fields.get(field_id, "-"),
+                SELECT_OPTIONS.get(field_id, (self._form.fields.get(field_id, "-"),), ),
                 x,
                 top,
                 width,
@@ -266,8 +360,8 @@ class LeftControlPanel:
                 top = self._add_dropdown_row(
                     f"event_{parameter_id}",
                     label,
-                    self._state.event_injector_fields.get(parameter_id, ""),
-                    SELECT_OPTIONS.get(parameter_id, (self._state.event_injector_fields.get(parameter_id, ""),),),
+                    self._form.fields.get(parameter_id, ""),
+                    SELECT_OPTIONS.get(parameter_id, (self._form.fields.get(parameter_id, ""),), ),
                     x,
                     top,
                     width,
@@ -278,11 +372,38 @@ class LeftControlPanel:
                 top = self._add_input_row(
                     parameter_id,
                     label,
-                    self._state.event_injector_fields.get(parameter_id, ""),
+                    self._form.fields.get(parameter_id, ""),
                     x,
                     top,
                     width,
                 )
+
+        if group == "Damage":
+            event_type = self._form.fields.get(
+                "damage_event_type",
+                "EVT_DAMAGE_LIGHT_IMPACT",
+            )
+            score = _to_float(
+                self._form.fields.get("damage_risk_score")
+            )
+            payload = build_external_damage_payload(
+                event_type,
+                60.0 if score is None else score,
+                confirmed=(
+                    self._form.fields.get("damage_confirmed")
+                    == "confirmed"
+                ),
+            )
+            top = self._add_notice(
+                f"判定：{payload['risk_level']}",
+                (
+                    f"表格建议 {payload['suggested_risk_level']} · "
+                    f"{payload['duration_label']} · 仅本地模拟"
+                ),
+                x,
+                top,
+                width,
+            )
 
         if group == "Vision":
             active = bool(
@@ -303,8 +424,8 @@ class LeftControlPanel:
 
     def _build_state_tab(self, x: float, top: float, width: float, bottom: float) -> None:
         group = (
-            self._state.event_injector_group
-            if self._state.event_injector_group in STATE_TYPES
+            self._form.group
+            if self._form.group in STATE_TYPES
             else "Need"
         )
         top = self._add_dropdown_row(
@@ -322,7 +443,7 @@ class LeftControlPanel:
             top = self._add_dropdown_row(
                 "state_item",
                 "需求项",
-                self._state.event_injector_fields.get("need_demand", "Hunger"),
+                self._form.fields.get("need_demand", "Hunger"),
                 config.DEMAND_NAMES,
                 x,
                 top,
@@ -333,14 +454,29 @@ class LeftControlPanel:
             top = self._add_input_row(
                 "need_value",
                 "数值 (0-100)",
-                self._state.event_injector_fields.get("need_value", ""),
+                self._form.fields.get("need_value", ""),
                 x,
                 top,
                 width,
             )
-            value = _to_float(self._state.event_injector_fields.get("need_value"))
+            if show_toilet_training_control(
+                group,
+                self._form.fields.get("need_demand", "Hunger"),
+            ):
+                top = self._add_dropdown_row(
+                    "toilet_training",
+                    "定点示教",
+                    self._form.fields.get("toilet_spot_taught", "false"),
+                    SELECT_OPTIONS["toilet_spot_taught"],
+                    x,
+                    top,
+                    width,
+                    target="field",
+                    field_id="toilet_spot_taught",
+                )
+            value = _to_float(self._form.fields.get("need_value"))
             level, event_name = resolve_need_output(
-                self._state.event_injector_fields.get("need_demand", "Hunger"),
+                self._form.fields.get("need_demand", "Hunger"),
                 82.0 if value is None else value,
             )
 
@@ -350,7 +486,7 @@ class LeftControlPanel:
             top = self._add_dropdown_row(
                 "state_item",
                 "情绪项",
-                self._state.event_injector_fields.get("emotion_name", "Joy"),
+                self._form.fields.get("emotion_name", "Joy"),
                 config.EMOTION_NAMES,
                 x,
                 top,
@@ -361,14 +497,14 @@ class LeftControlPanel:
             top = self._add_input_row(
                 "emotion_value",
                 "数值 (0-100)",
-                self._state.event_injector_fields.get("emotion_value", ""),
+                self._form.fields.get("emotion_value", ""),
                 x,
                 top,
                 width,
             )
-            value = _to_float(self._state.event_injector_fields.get("emotion_value"))
+            value = _to_float(self._form.fields.get("emotion_value"))
             level, event_name, level_range = resolve_emotion_output(
-                self._state.event_injector_fields.get("emotion_name", "Joy"),
+                self._form.fields.get("emotion_name", "Joy"),
                 90.0 if value is None else value,
             )
             detail = (
@@ -379,7 +515,7 @@ class LeftControlPanel:
             top = self._add_notice(f"推导等级：{level}", detail, x, top, width)
             button_label = "发布状态与事件" if event_name else "仅发布状态快照"
         else:
-            trait = self._state.event_injector_fields.get("personality_trait", "A")
+            trait = self._form.fields.get("personality_trait", "A")
             top = self._add_dropdown_row(
                 "state_item",
                 "性格维度",
@@ -395,7 +531,7 @@ class LeftControlPanel:
             top = self._add_input_row(
                 value_field,
                 "数值 (0-100)",
-                self._state.event_injector_fields.get(value_field, ""),
+                self._form.fields.get(value_field, ""),
                 x,
                 top,
                 width,
@@ -403,7 +539,7 @@ class LeftControlPanel:
             top = self._add_dropdown_row(
                 "state_profile",
                 "性格配置",
-                self._state.event_injector_fields.get("personality_profile", "Custom"),
+                self._form.fields.get("personality_profile", "Custom"),
                 SELECT_OPTIONS["personality_profile"],
                 x,
                 top,
@@ -433,7 +569,7 @@ class LeftControlPanel:
         top = self._add_dropdown_row(
             "command_id",
             "指令类型",
-            self._state.event_injector_fields.get("audio_command_id", "CMD_SIT"),
+            self._form.fields.get("audio_command_id", "CMD_SIT"),
             SELECT_OPTIONS["audio_command_id"],
             x,
             top,
@@ -442,14 +578,14 @@ class LeftControlPanel:
             field_id="audio_command_id",
         )
         for field_id, label in (
-            ("audio_asr_text", "ASR 文本"),
-            ("audio_speaker_id", "说话人"),
-            ("audio_confidence", "置信度"),
+                ("audio_asr_text", "ASR 文本"),
+                ("audio_speaker_id", "说话人"),
+                ("audio_confidence", "置信度"),
         ):
             top = self._add_input_row(
                 field_id,
                 label,
-                self._state.event_injector_fields.get(field_id, ""),
+                self._form.fields.get(field_id, ""),
                 x,
                 top,
                 width,
@@ -476,11 +612,11 @@ class LeftControlPanel:
         self._add_payload_section(x, top, width, bottom, "发送指令", "send_command")
 
     def _build_scenario_tab(
-        self,
-        x: float,
-        top: float,
-        width: float,
-        _bottom: float,
+            self,
+            x: float,
+            top: float,
+            width: float,
+            _bottom: float,
     ) -> None:
         top = self._add_label(
             "预设测试场景",
@@ -500,7 +636,7 @@ class LeftControlPanel:
                 height,
                 f"{label}\n{summary}",
                 "scenario",
-                active=self._state.ui_selected_scenario == scenario_id,
+                active=self._form.selected_scenario == scenario_id,
                 multiline=True,
                 scenario_id=scenario_id,
             )
@@ -508,14 +644,14 @@ class LeftControlPanel:
             top -= height + 6
 
     def _add_payload_section(
-        self,
-        x: float,
-        top: float,
-        width: float,
-        bottom: float,
-        action_label: str,
-        action: str,
-        **data: object,
+            self,
+            x: float,
+            top: float,
+            width: float,
+            bottom: float,
+            action_label: str,
+            action: str,
+            **data: object,
     ) -> None:
         top = self._add_label(
             "发布话题:",
@@ -528,10 +664,10 @@ class LeftControlPanel:
 
         topic_height = max(
             1,
-            len(self._state.ui_preview_topics),
+            len(self._form.preview_topics),
         ) * config.LINE_HEIGHT
         self._topic_label = self._manager.add(self._add_label_widget(
-            ", ".join(self._state.ui_preview_topics) or "-",
+            ", ".join(self._form.preview_topics) or "-",
             x,
             top - config.SPACE_XS - topic_height,
             width,
@@ -590,7 +726,7 @@ class LeftControlPanel:
         height = min(560.0, config.TOP_BAR_BOTTOM - config.BOTTOM_LOG_HEIGHT - 40)
         x = (config.WINDOW_WIDTH - width) / 2
         y = config.BOTTOM_LOG_HEIGHT + (
-            config.TOP_BAR_BOTTOM - config.BOTTOM_LOG_HEIGHT - height
+                config.TOP_BAR_BOTTOM - config.BOTTOM_LOG_HEIGHT - height
         ) / 2
         panel = arcade.gui.UIWidget(
             x=x,
@@ -612,7 +748,7 @@ class LeftControlPanel:
         )
         self._manager.add(self._payload_title, layer=arcade.gui.UIManager.OVERLAY_LAYER)
         self._topic_label = self._add_label_widget(
-            ", ".join(self._state.ui_preview_topics) or "-",
+            ", ".join(self._form.preview_topics) or "-",
             x + 14,
             y + height - 57,
             width - 70,
@@ -633,7 +769,7 @@ class LeftControlPanel:
 
         payload_widget = AJsonPreviewer(
             BBox(x + 14, y + 14, width - 28, height - 82),
-            self._state.ui_payload_preview,
+            self._form.payload_preview,
             font_size=10,
             size_hint=None,
         )
@@ -646,13 +782,13 @@ class LeftControlPanel:
         )
 
     def _add_input_row(
-        self,
-        field_id: str,
-        label: str,
-        value: str,
-        x: float,
-        top: float,
-        width: float,
+            self,
+            field_id: str,
+            label: str,
+            value: str,
+            x: float,
+            top: float,
+            width: float,
     ) -> float:
         label_width = min(82.0, width * 0.34)
         height = config.CONTROL_HEIGHT
@@ -682,7 +818,7 @@ class LeftControlPanel:
         widget.layout.content_valign = "center"
 
         @widget.event("on_change")
-        def handle_change(event: Any, current_field_id: str = field_id) -> None:
+        def handle_change(event: T.Any, current_field_id: str = field_id) -> None:
             self._update_field(current_field_id, str(event.new_value), widget)
 
         self._input_widgets[field_id] = widget
@@ -690,16 +826,16 @@ class LeftControlPanel:
         return top - height - config.FORM_ROW_GAP
 
     def _add_dropdown_row(
-        self,
-        select_id: str,
-        label: str,
-        value: str,
-        options: Iterable[str],
-        x: float,
-        top: float,
-        width: float,
-        target: str,
-        field_id: str | None = None,
+            self,
+            select_id: str,
+            label: str,
+            value: str,
+            options: Iterable[str],
+            x: float,
+            top: float,
+            width: float,
+            target: str,
+            field_id: str | None = None,
     ) -> float:
         label_width = min(82.0, width * 0.34)
         height = config.CONTROL_HEIGHT
@@ -727,7 +863,7 @@ class LeftControlPanel:
         )
 
         @widget.event("on_change")
-        def handle_change(event: Any) -> None:
+        def handle_change(event: T.T.Any) -> None:
             if self._syncing:
                 return
             raw_value = display_to_raw.get(str(event.new_value), str(event.new_value))
@@ -749,13 +885,13 @@ class LeftControlPanel:
         return top - height - config.FORM_ROW_GAP
 
     def _add_action_row(
-        self,
-        x: float,
-        top: float,
-        width: float,
-        label: str,
-        action: str,
-        **data: object,
+            self,
+            x: float,
+            top: float,
+            width: float,
+            label: str,
+            action: str,
+            **data: object,
     ) -> float:
         height = config.BUTTON_HEIGHT
         self._add_button(x, top - height, width, height, label, action, **data)
@@ -776,7 +912,8 @@ class LeftControlPanel:
 
         label_x = x + config.SPACE_SM
         label_width = max(1.0, width - 2 * config.SPACE_SM)
-        title_y = top - config.SPACE_XS - config.LINE_HEIGHT if detail else notice_bottom + (notice_height - config.LINE_HEIGHT) / 2
+        title_y = top - config.SPACE_XS - config.LINE_HEIGHT if detail else notice_bottom + (
+                notice_height - config.LINE_HEIGHT) / 2
 
         self._manager.add(self._add_label_widget(
             title,
@@ -802,19 +939,19 @@ class LeftControlPanel:
         return top - notice_height - config.FORM_ROW_GAP
 
     def _add_button(
-        self,
-        x: float,
-        y: float,
-        width: float,
-        height: float,
-        label: str,
-        action: str,
-        *,
-        primary: bool = False,
-        active: bool = False,
-        multiline: bool = False,
-        layer: int = arcade.gui.UIManager.DEFAULT_LAYER,
-        **data: object,
+            self,
+            x: float,
+            y: float,
+            width: float,
+            height: float,
+            label: str,
+            action: str,
+            *,
+            primary: bool = False,
+            active: bool = False,
+            multiline: bool = False,
+            layer: int = arcade.gui.UIManager.DEFAULT_LAYER,
+            **data: object,
     ) -> arcade.gui.UIFlatButton:
         button = arcade.gui.UIFlatButton(
             x=x,
@@ -828,7 +965,7 @@ class LeftControlPanel:
         )
 
         @button.event("on_click")
-        def handle_click(_event: Any) -> None:
+        def handle_click(_event: T.Any) -> None:
             self._dispatch(action, **data)
             self.request_rebuild()
 
@@ -836,13 +973,13 @@ class LeftControlPanel:
         return button
 
     def _add_label(
-        self,
-        text: str,
-        x: float,
-        top: float,
-        width: float,
-        height: float,
-        **kwargs: Any,
+            self,
+            text: str,
+            x: float,
+            top: float,
+            width: float,
+            height: float,
+            **kwargs: T.Any,
     ) -> float:
         self._manager.add(
             self._add_label_widget(
@@ -857,17 +994,17 @@ class LeftControlPanel:
         return top - height
 
     def _add_label_widget(
-        self,
-        text: str,
-        x: float,
-        y: float,
-        width: float,
-        height: float,
-        *,
-        font_size: float = config.FONT_SIZE_AUX,
-        color: tuple[int, ...] = config.COLORS["muted_text"],
-        bold: bool = False,
-        multiline: bool = False,
+            self,
+            text: str,
+            x: float,
+            y: float,
+            width: float,
+            height: float,
+            *,
+            font_size: float = config.FONT_SIZE_AUX,
+            color: tuple[int, ...] = config.COLORS["muted_text"],
+            bold: bool = False,
+            multiline: bool = False,
     ) -> arcade.gui.UILabel:
         return arcade.gui.UILabel(
             x=x,
@@ -884,10 +1021,10 @@ class LeftControlPanel:
         )
 
     def _update_field(
-        self,
-        field_id: str,
-        value: str,
-        widget: arcade.gui.UIInputText,
+            self,
+            field_id: str,
+            value: str,
+            widget: arcade.gui.UIInputText,
     ) -> None:
         if self._syncing:
             return
@@ -899,16 +1036,18 @@ class LeftControlPanel:
                 widget.text = limited_value
             finally:
                 self._syncing = False
-        self._state.event_injector_fields[field_id] = limited_value
-        self._dispatch("field_changed", field_id=field_id)
+        self._dispatch(
+            "field_changed",
+            field_id=field_id,
+            value=limited_value,
+        )
 
     def _update_payload(self, value: str) -> None:
         if self._syncing:
             return
 
         limited_value = value[: config.MAX_PAYLOAD_PREVIEW_CHARS]
-        self._state.ui_payload_preview = limited_value
-        self._state.ui_payload_preview_dirty = True
+        self._dispatch("payload_changed", value=limited_value)
 
     def _dispatch(self, action: str, **data: object) -> None:
         self._action_handler({"action": action, **data})
@@ -929,7 +1068,7 @@ class LeftControlPanel:
         self._syncing = True
         try:
             if self._payload_widget is not None:
-                payload_text = self._state.ui_payload_preview
+                payload_text = self._form.payload_preview
                 self._payload_widget.set_value(payload_text)
             if self._payload_title is not None:
                 expanded = self._state.ui_payload_preview_expanded
@@ -937,12 +1076,12 @@ class LeftControlPanel:
                 if self._payload_title.text != title:
                     self._payload_title.text = title
             if self._topic_label is not None:
-                topic_text = ", ".join(self._state.ui_preview_topics) or "-"
+                topic_text = ", ".join(self._form.preview_topics) or "-"
                 if self._topic_label.text != topic_text:
                     self._topic_label.text = topic_text
 
             for field_id, widget in self._input_widgets.items():
-                value = self._state.event_injector_fields.get(field_id, "")
+                value = self._form.fields.get(field_id, "")
                 if widget.text != value:
                     widget.text = value
 
@@ -956,21 +1095,22 @@ class LeftControlPanel:
 
     def _selected_raw_value(self, select_id: str) -> str:
         if select_id == "event_source" or select_id == "state_type":
-            return self._state.event_injector_group
+            return self._form.group
         field_ids = {
-            "event_type": event_type_field(self._state.event_injector_group) or "",
+            "event_type": event_type_field(self._form.group) or "",
             "state_item": {
                 "Need": "need_demand",
                 "Emotion": "emotion_name",
                 "Personality": "personality_trait",
-            }.get(self._state.event_injector_group, ""),
+            }.get(self._form.group, ""),
             "state_profile": "personality_profile",
             "command_id": "audio_command_id",
+            "toilet_training": "toilet_spot_taught",
         }
         field_id = field_ids.get(select_id)
         if not field_id and select_id.startswith("event_"):
             field_id = select_id.removeprefix("event_")
-        return self._state.event_injector_fields.get(field_id or "", "")
+        return self._form.fields.get(field_id or "", "")
 
 
 def _display_options(options: Iterable[str]) -> tuple[dict[str, str], dict[str, str]]:
@@ -1001,7 +1141,7 @@ def _cursor_name_for_widgets(widgets: Iterable[arcade.gui.UIWidget]) -> str:
     return "default"
 
 
-def _dropdown_style(*, active: bool) -> dict[str, Any]:
+def _dropdown_style(*, active: bool) -> dict[str, T.T.Any]:
     return arcade_button_style(active=active)
 
 

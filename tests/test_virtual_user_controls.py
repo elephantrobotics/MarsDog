@@ -13,8 +13,10 @@ from marsdog_sim2d.arcade_viewer_node import (
     _toggle_virtual_user_motion,
     _voice_command_requires_visible_user,
 )
-from marsdog_sim2d.event_injector import default_field_values
-from marsdog_sim2d.sim_state import SimEvent, SimState
+from simevent.event_injector import default_field_values
+from controllers.left_panel_controller import LeftPanelController
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.simevent.sim_state import SimState
 
 
 class VirtualUserControlTests(unittest.TestCase):
@@ -138,28 +140,23 @@ class VirtualUserControlTests(unittest.TestCase):
             pass
 
         harness = Harness()
-        harness.sim_state = SimState(
-            ui_user_visible=False,
-            event_injector_group="Audio",
-            event_injector_fields=default_field_values(),
+        harness.sim_state = SimState(ui_user_visible=False)
+        harness.sim_state.injection_form.fields.update(
+            default_field_values(),
+            audio_event_type="EVT_VOICE_COMMAND_KNOWN",
+            audio_command_id="CMD_FOLLOW",
         )
-        harness.injection_queue = queue.Queue()
-        harness._resolved_fields = lambda group: {
-            **default_field_values(),
-            "audio_event_type": "EVT_VOICE_COMMAND_KNOWN",
-            "audio_command_id": "CMD_FOLLOW",
-        }
+        controller = LeftPanelController(harness.sim_state.injection_form)
 
-        SimWindow._send_custom_injection(harness, "Audio")
+        effect = controller.prepare_injection("Audio")
 
-        self.assertTrue(harness.injection_queue.empty())
         self.assertEqual(
             "没有识别到主人",
-            harness.sim_state.ui_pending_confirmation["message"],
+            effect.confirmation["message"],
         )
         self.assertEqual(
             "alert",
-            harness.sim_state.ui_pending_confirmation["kind"],
+            effect.confirmation["kind"],
         )
 
     @staticmethod
@@ -167,7 +164,7 @@ class VirtualUserControlTests(unittest.TestCase):
         class Harness:
             pass
 
-        from marsdog_sim2d.virtual_executor import LocalVirtualRunner
+        from bridge.virtual_executor import LocalVirtualRunner
 
         harness = Harness()
         harness.sim_state = state

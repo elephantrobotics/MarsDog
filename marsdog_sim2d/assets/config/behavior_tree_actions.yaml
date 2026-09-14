@@ -17,32 +17,32 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_LOWER_HEAD_AND_APPROACH_BOWL}
+          - {unit_id: ACT_LOWER_HEAD_AND_APPROACH_BOWL, duration_sec: [3, 15]}
       - stage_id: eating
         order: 2
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_LICK_FOOD}
-          - {unit_id: ACT_CHEW_OR_CARRY_FOOD}
-          - {unit_id: ACT_SCRATCH_FOOD}
+          - {unit_id: ACT_LICK_FOOD, duration_sec: [30, 180]}
+          - {unit_id: ACT_CHEW_OR_CARRY_FOOD, duration_sec: [30, 180]}
+          - {unit_id: ACT_SCRATCH_FOOD, duration_sec: [5, 30]}
       - stage_id: interaction
         order: 3
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_PAUSE_AND_LOOK_AT_OWNER}
-          - {unit_id: ACT_CHANGE_POSTURE}
-          - {unit_id: ACT_BURP}
+          - {unit_id: ACT_PAUSE_AND_LOOK_AT_OWNER, duration_sec: [2, 8]}
+          - {unit_id: ACT_CHANGE_POSTURE, duration_sec: [5, 30]}
+          - {unit_id: ACT_BURP, duration_sec: [2, 8]}
       - stage_id: exit
         order: 4
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_LICK_LIPS_OR_NOSE}
-          - {unit_id: ACT_SHAKE_HEAD}
-          - {unit_id: ACT_WALK_AWAY_OR_LIE_DOWN}
-          - {unit_id: ACT_SNIFF_GROUND_FOR_CRUMBS}
+          - {unit_id: ACT_LICK_LIPS_OR_NOSE, duration_sec: [2, 8]}
+          - {unit_id: ACT_SHAKE_HEAD, duration_sec: [2, 8]}
+          - {unit_id: ACT_WALK_AWAY_OR_LIE_DOWN, duration_sec: [3, 15]}
+          - {unit_id: ACT_SNIFF_GROUND_FOR_CRUMBS, duration_sec: [10, 60]}
 
   seekFood:
     behavior_name: seekFood
@@ -53,9 +53,9 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_CARRY_BOWL_AND_FOLLOW_OWNER}
-          - {unit_id: ACT_PAW_AT_BOWL_FOR_FOOD}
-          - {unit_id: ACT_SNIFF_BOWL_AND_WAIT_FOR_FOOD}
+          - {unit_id: ACT_CARRY_BOWL_AND_FOLLOW_OWNER, duration_sec: [5, 30]}
+          - {unit_id: ACT_PAW_AT_BOWL_FOR_FOOD, duration_sec: [60, 600]}
+          - {unit_id: ACT_SNIFF_BOWL_AND_WAIT_FOR_FOOD, duration_sec: [10, 60]}
 
   eatExcitedly:
     behavior_name: eatExcitedly
@@ -66,24 +66,24 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_LOWER_HEAD_AND_APPROACH_BOWL}
+          - {unit_id: ACT_LOWER_HEAD_AND_APPROACH_BOWL, duration_sec: [3, 15]}
       - stage_id: eating
         order: 2
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_LICK_AND_SWALLOW}
-          - {unit_id: ACT_SCRATCH_FOOD}
-          - {unit_id: ACT_CHEW_OR_CARRY_FOOD}
+          - {unit_id: ACT_LICK_AND_SWALLOW, duration_sec: [2, 8]}
+          - {unit_id: ACT_SCRATCH_FOOD, duration_sec: [5, 30]}
+          - {unit_id: ACT_CHEW_OR_CARRY_FOOD, duration_sec: [30, 180]}
       - stage_id: exit
         order: 3
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_SNIFF_GROUND_FOR_CRUMBS_AND_LEAVE}
-          - {unit_id: ACT_WALK_AWAY_OR_LIE_DOWN}
-          - {unit_id: ACT_SHAKE_HEAD}
-          - {unit_id: ACT_LICK_LIPS_OR_NOSE_AND_LEAVE}
+          - {unit_id: ACT_SNIFF_GROUND_FOR_CRUMBS_AND_LEAVE, duration_sec: [3, 15]}
+          - {unit_id: ACT_WALK_AWAY_OR_LIE_DOWN, duration_sec: [3, 15]}
+          - {unit_id: ACT_SHAKE_HEAD, duration_sec: [2, 8]}
+          - {unit_id: ACT_LICK_LIPS_OR_NOSE_AND_LEAVE, duration_sec: [2, 8]}
 
   seekFoodUrgently:
     behavior_name: seekFoodUrgently
@@ -94,10 +94,10 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_CARRY_BOWL_AND_FOLLOW_OWNER}
-          - {unit_id: ACT_PAW_AT_BOWL_AND_WAIT_FOR_FOOD}
-          - {unit_id: ACT_SNIFF_BOWL_RIM_AND_WAIT_FOR_FOOD}
-          - {unit_id: ACT_WHINE_AND_WAIT_FOR_FOOD}
+          - {unit_id: ACT_CARRY_BOWL_AND_FOLLOW_OWNER, duration_sec: [5, 30]}
+          - {unit_id: ACT_PAW_AT_BOWL_AND_WAIT_FOR_FOOD, duration_sec: [60, 600]}
+          - {unit_id: ACT_SNIFF_BOWL_RIM_AND_WAIT_FOR_FOOD, duration_sec: [10, 60]}
+          - {unit_id: ACT_WHINE_AND_WAIT_FOR_FOOD, duration_sec: [60, 600]}
 
   barkShortAlert:
     behavior_name: barkShortAlert
@@ -108,22 +108,22 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_SNIFF_AND_CIRCLE}
-          - {unit_id: ACT_SNIFF_AND_CIRCLE_AT_TOILET_SPOT}
+          - {unit_id: ACT_SNIFF_AND_CIRCLE, duration_sec: [10, 60]}
+          - {unit_id: ACT_SNIFF_AND_CIRCLE_AT_TOILET_SPOT, duration_sec: [10, 60]}
       - stage_id: action
         order: 2
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_SQUAT_AND_ELIMINATE}
+          - {unit_id: ACT_SQUAT_AND_ELIMINATE, duration_sec: [5, 30]}
       - stage_id: exit
         order: 3
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_SCRATCH_SOIL_OR_GROUND}
-          - {unit_id: ACT_SNIFF_EXCREMENT}
-          - {unit_id: ACT_WALK_AWAY_OR_SHAKE_HEAD}
+          - {unit_id: ACT_SCRATCH_SOIL_OR_GROUND, duration_sec: [3, 15]}
+          - {unit_id: ACT_SNIFF_EXCREMENT, duration_sec: [3, 15]}
+          - {unit_id: ACT_WALK_AWAY_OR_SHAKE_HEAD, duration_sec: [2, 8]}
 
   lickPaws:
     behavior_name: lickPaws
@@ -134,11 +134,11 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_LICK_PAWS_OR_FUR}
-          - {unit_id: ACT_RUB_BODY_AGAINST_OBJECT}
-          - {unit_id: ACT_PAW_AT_MUZZLE}
-          - {unit_id: ACT_SHAKE_OFF_WATER}
-          - {unit_id: ACT_SCRATCH_EAR_WITH_HIND_LEG}
+          - {unit_id: ACT_LICK_PAWS_OR_FUR, duration_sec: [5, 30]}
+          - {unit_id: ACT_RUB_BODY_AGAINST_OBJECT, duration_sec: [5, 30]}
+          - {unit_id: ACT_PAW_AT_MUZZLE, duration_sec: [5, 30]}
+          - {unit_id: ACT_SHAKE_OFF_WATER, duration_sec: [5, 30]}
+          - {unit_id: ACT_SCRATCH_EAR_WITH_HIND_LEG, duration_sec: [20, 180]}
 
   sleepOnSide:
     behavior_name: sleepOnSide
@@ -149,39 +149,38 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_CIRCLE_AROUND}
-          - {unit_id: ACT_SCRATCH_BED_OR_GROUND}
-          - {unit_id: ACT_STRETCH_BODY}
-          - {unit_id: ACT_YAWN}
-          - {unit_id: ACT_SPLoot_LIE_DOWN}
-          - {unit_id: ACT_LICK_FUR_OR_PAWS}
+          - {unit_id: ACT_CIRCLE_AROUND, duration_sec: [5, 30]}
+          - {unit_id: ACT_SCRATCH_BED_OR_GROUND, duration_sec: [5, 30]}
+          - {unit_id: ACT_STRETCH_BODY, duration_sec: [5, 30]}
+          - {unit_id: ACT_YAWN, duration_sec: [5, 30]}
+          - {unit_id: ACT_SPLoot_LIE_DOWN, duration_sec: [5, 30]}
+          - {unit_id: ACT_LICK_FUR_OR_PAWS, duration_sec: [20, 180]}
       - stage_id: sleep_pose
         order: 2
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_SLEEP_CURLED_UP}
-          - {unit_id: ACT_SLEEP_ON_STOMACH}
-          - {unit_id: ACT_SLEEP_ON_SIDE_CURLED_UP}
+          - {unit_id: ACT_SLEEP_CURLED_UP, duration_sec: [60, 600]}
+          - {unit_id: ACT_SLEEP_ON_STOMACH, duration_sec: [60, 600]}
+          - {unit_id: ACT_SLEEP_ON_SIDE_CURLED_UP, duration_sec: [60, 600]}
       - stage_id: sleeping
         order: 3
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_FLIP_BODY}
-          - {unit_id: ACT_WHINE_SOFTLY}
-          - {unit_id: ACT_TWITCH_OR_KICK_LEGS}
+          - {unit_id: ACT_FLIP_BODY, duration_sec: [5, 30]}
+          - {unit_id: ACT_WHINE_SOFTLY, duration_sec: [5, 30]}
+          - {unit_id: ACT_TWITCH_OR_KICK_LEGS, duration_sec: [5, 30]}
       - stage_id: wakeup
         order: 4
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_GETUP_CRAWL}
-          - {unit_id: ACT_GETUP_ROLL}
-          - {unit_id: ACT_GETUP_BOUNCE}
-          - {unit_id: ACT_GETUP_STRETCH}
-          - {unit_id: ACT_GETUP_SIT}
-          - {unit_id: ACT_GETUP_CRAWL}
+          - {unit_id: ACT_GETUP_CRAWL, duration_sec: [5, 30]}
+          - {unit_id: ACT_GETUP_ROLL, duration_sec: [5, 30]}
+          - {unit_id: ACT_GETUP_BOUNCE, duration_sec: [5, 30]}
+          - {unit_id: ACT_GETUP_STRETCH, duration_sec: [3, 15]}
+          - {unit_id: ACT_GETUP_SIT, duration_sec: [5, 30]}
 
   sleepNow:
     behavior_name: sleepNow
@@ -192,35 +191,35 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_CIRCLE_AROUND}
-          - {unit_id: ACT_SCRATCH_BED_OR_GROUND}
-          - {unit_id: ACT_STRETCH_BODY}
-          - {unit_id: ACT_YAWN}
-          - {unit_id: ACT_SPLoot_LIE_DOWN}
-          - {unit_id: ACT_LICK_FUR_OR_PAWS}
+          - {unit_id: ACT_CIRCLE_AROUND, duration_sec: [5, 30]}
+          - {unit_id: ACT_SCRATCH_BED_OR_GROUND, duration_sec: [5, 30]}
+          - {unit_id: ACT_STRETCH_BODY, duration_sec: [5, 30]}
+          - {unit_id: ACT_YAWN, duration_sec: [5, 30]}
+          - {unit_id: ACT_SPLoot_LIE_DOWN, duration_sec: [5, 30]}
+          - {unit_id: ACT_LICK_FUR_OR_PAWS, duration_sec: [20, 180]}
       - stage_id: sleep_pose
         order: 2
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_SLEEP_ON_SIDE}
-          - {unit_id: ACT_SLEEP_ON_BACK}
+          - {unit_id: ACT_SLEEP_ON_SIDE, duration_sec: [60, 600]}
+          - {unit_id: ACT_SLEEP_ON_BACK, duration_sec: [60, 600]}
       - stage_id: sleeping
         order: 3
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_FLIP_BODY}
-          - {unit_id: ACT_WHINE_SOFTLY}
-          - {unit_id: ACT_TWITCH_OR_KICK_LEGS}
+          - {unit_id: ACT_FLIP_BODY, duration_sec: [5, 30]}
+          - {unit_id: ACT_WHINE_SOFTLY, duration_sec: [5, 30]}
+          - {unit_id: ACT_TWITCH_OR_KICK_LEGS, duration_sec: [5, 30]}
       - stage_id: wakeup
         order: 4
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_GETUP_ROLL}
-          - {unit_id: ACT_GETUP_STRETCH}
-          - {unit_id: ACT_GETUP_SIT}
+          - {unit_id: ACT_GETUP_ROLL, duration_sec: [5, 30]}
+          - {unit_id: ACT_GETUP_STRETCH, duration_sec: [5, 30]}
+          - {unit_id: ACT_GETUP_SIT, duration_sec: [5, 30]}
 
   restInPlace:
     behavior_name: restInPlace
@@ -231,8 +230,8 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_SLOW_DOWN_IN_RESPONSE_TO_OWNER}
-          - {unit_id: ACT_RETURN_TO_DOG_BED_FOR_CHARGING}
+          - {unit_id: ACT_SLOW_DOWN_IN_RESPONSE_TO_OWNER, duration_sec: [5, 30]}
+          - {unit_id: ACT_RETURN_TO_DOG_BED_FOR_CHARGING, duration_sec: [5, 30]}
 
   recharge:
     behavior_name: recharge
@@ -243,8 +242,8 @@ behaviors:
         selection_policy: random_one
         required: true
         candidates:
-          - {unit_id: ACT_RETURN_TO_CHARGER}
-          - {unit_id: ACT_BARK_AND_LIE_DOWN_IF_NO_CHARGER}
+          - {unit_id: ACT_RETURN_TO_CHARGER, duration_sec: [60, 600]}
+          - {unit_id: ACT_BARK_AND_LIE_DOWN_IF_NO_CHARGER, duration_sec: [3, 15]}
 
   testAnimalBoundary:
     behavior_name: testAnimalBoundary

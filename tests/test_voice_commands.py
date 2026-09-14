@@ -1,11 +1,11 @@
 import unittest
 
-from marsdog_sim2d.event_injector import build_custom_injection_command
-from marsdog_sim2d.voice_commands import (
+from simevent.event_injector import build_custom_injection_command
+from marsdog_sim2d.behavior.voice_commands import (
     VOICE_COMMAND_SPECS,
     resolve_voice_command,
 )
-from marsdog_sim2d.virtual_executor import VirtualRoom
+from bridge.virtual_executor import VirtualRoom
 
 
 class VoiceCommandTests(unittest.TestCase):

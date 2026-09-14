@@ -10,10 +10,11 @@ from marsdog_sim2d.arcade_viewer_node import (
     SimWindow,
     _has_active_internal_need,
 )
-from marsdog_sim2d.behavior_contract import SelectedStage
-from marsdog_sim2d.sim_state import SimEvent, SimState
-from marsdog_sim2d.views.renderer import WorldRenderer
-from marsdog_sim2d.virtual_executor import LocalVirtualRunner
+from marsdog_sim2d.behavior.behavior_contract import SelectedStage
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.simevent.sim_state import SimState
+from marsdog_sim2d.pages.renderer import WorldRenderer
+from bridge.virtual_executor import LocalVirtualRunner
 
 
 class FoodSupplyControlTests(unittest.TestCase):
@@ -208,6 +209,30 @@ class FoodSupplyControlTests(unittest.TestCase):
         self.assertEqual(4, len(runner.plan.selected_stages))
         self.assertEqual(
             ["prepare", "eating", "interaction", "exit"],
+            [stage.stage_id for stage in runner.plan.selected_stages],
+        )
+
+    def test_urgent_hunger_advances_to_excited_eating(self) -> None:
+        state = SimState()
+        runner = LocalVirtualRunner()
+        goal = runner.start(
+            "seekFoodUrgently",
+            timeout_sec=0.0,
+            preferred_action="ACT_SNIFF_BOWL_RIM_AND_WAIT_FOR_FOOD",
+        )
+        state.apply_event(goal)
+        harness = self._harness(state, runner)
+        harness._manual_need_local_goal_id = runner.plan.goal_id
+        harness._manual_need_local_demand = "HUNGER"
+        harness._manual_need_triggered_at = time.time() - 1.0
+        harness._manual_hunger_phase = "seeking"
+
+        SimWindow._toggle_bowl_food(harness)
+
+        self.assertEqual("eating", harness._manual_hunger_phase)
+        self.assertEqual("eatExcitedly", runner.plan.behavior_name)
+        self.assertEqual(
+            ["prepare", "eating", "exit"],
             [stage.stage_id for stage in runner.plan.selected_stages],
         )
 

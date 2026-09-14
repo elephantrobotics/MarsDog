@@ -4,32 +4,35 @@ from unittest.mock import Mock, patch
 import arcade.gui
 
 from marsdog_sim2d import config
-from marsdog_sim2d.views import left_panel as left_panel_module
+from marsdog_sim2d.pages import left_panel as left_panel_module
 from marsdog_sim2d.components import AJsonPreviewer, BBox
-from marsdog_sim2d.views.left_panel import (
+from marsdog_sim2d.pages.left_panel import (
     LeftControlPanel,
     _cursor_name_for_widgets,
     _display_options,
 )
-from marsdog_sim2d.sim_state import SimState
+from simevent.sim_state import SimState
 
 
 class NativePayloadEditorTests(unittest.TestCase):
     def _panel_without_window(self, state: SimState) -> LeftControlPanel:
         panel = object.__new__(LeftControlPanel)
         panel._state = state
+        panel._form = state.injection_form
         panel._syncing = False
         panel._action_handler = Mock()
         return panel
 
-    def test_payload_change_updates_editable_state(self) -> None:
+    def test_payload_change_dispatches_without_mutating_state(self) -> None:
         state = SimState()
         panel = self._panel_without_window(state)
 
         panel._update_payload("edited payload")
 
-        self.assertEqual("edited payload", state.ui_payload_preview)
-        self.assertTrue(state.ui_payload_preview_dirty)
+        self.assertNotEqual("edited payload", state.injection_form.payload_preview)
+        panel._action_handler.assert_called_once_with(
+            {"action": "payload_changed", "value": "edited payload"}
+        )
 
     def test_payload_change_respects_preview_limit(self) -> None:
         state = SimState()
@@ -39,7 +42,7 @@ class NativePayloadEditorTests(unittest.TestCase):
 
         self.assertEqual(
             config.MAX_PAYLOAD_PREVIEW_CHARS,
-            len(state.ui_payload_preview),
+            len(panel._action_handler.call_args.args[0]["value"]),
         )
 
     def test_native_field_change_keeps_existing_preview_refresh_path(self) -> None:
@@ -49,9 +52,13 @@ class NativePayloadEditorTests(unittest.TestCase):
 
         panel._update_field("audio_speaker_id", "owner", widget)
 
-        self.assertEqual("owner", state.event_injector_fields["audio_speaker_id"])
+        self.assertNotIn("audio_speaker_id", state.injection_form.fields)
         panel._action_handler.assert_called_once_with(
-            {"action": "field_changed", "field_id": "audio_speaker_id"}
+            {
+                "action": "field_changed",
+                "field_id": "audio_speaker_id",
+                "value": "owner",
+            }
         )
 
     def test_duplicate_labels_keep_distinct_dropdown_values(self) -> None:
@@ -79,7 +86,7 @@ class NativePayloadEditorTests(unittest.TestCase):
 
     def test_published_topics_wrap_and_reserve_each_topic_line(self) -> None:
         state = SimState()
-        state.ui_preview_topics = [
+        state.injection_form.preview_topics = [
             "/internal_need/state",
             "/internal_need/signal_event",
         ]
@@ -113,12 +120,12 @@ class NativePayloadEditorTests(unittest.TestCase):
         )
 
         initial_signature = panel._layout_signature()
-        state.ui_preview_topics.append("/emotion/state")
+        state.injection_form.preview_topics.append("/emotion/state")
         self.assertNotEqual(initial_signature, panel._layout_signature())
 
     def test_payload_section_uses_preview_button_without_inline_widget(self) -> None:
         state = SimState()
-        state.ui_payload_preview = '{"ready": true}'
+        state.injection_form.payload_preview = '{"ready": true}'
         panel = self._panel_without_window(state)
         panel._manager = Mock()
         panel._add_label = Mock(return_value=188.0)
@@ -197,7 +204,7 @@ class NativePayloadEditorTests(unittest.TestCase):
 
     def test_payload_preview_sync_keeps_json_formatting_path(self) -> None:
         state = SimState()
-        state.ui_payload_preview = '{"ready": true}'
+        state.injection_form.payload_preview = '{"ready": true}'
         panel = self._panel_without_window(state)
         panel._payload_widget = object.__new__(AJsonPreviewer)
         panel._payload_title = None
@@ -212,7 +219,7 @@ class NativePayloadEditorTests(unittest.TestCase):
 
     def test_payload_preview_dialog_uses_json_previewer(self) -> None:
         state = SimState()
-        state.ui_payload_preview = '{"ready": true}'
+        state.injection_form.payload_preview = '{"ready": true}'
         panel = self._panel_without_window(state)
         panel._manager = Mock()
         panel._add_label_widget = Mock(side_effect=(Mock(), Mock()))

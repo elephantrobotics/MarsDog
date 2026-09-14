@@ -1,7 +1,8 @@
 import unittest
 
 from marsdog_sim2d import config
-from marsdog_sim2d.sim_state import SimEvent, SimState
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.simevent.sim_state import SimState
 
 
 class MotionSmoothingTests(unittest.TestCase):

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+VERSION = "v1.3.1"
 WINDOW_WIDTH = 1470
 WINDOW_HEIGHT = 820
-WINDOW_TITLE = "MarsDog 2D ROS2 Viewer v1.3"
+WINDOW_TITLE = f"MarsDog 2D ROS2 Viewer {VERSION}"
 
 STARTUP_ANIMATION_DURATION_SEC = 1.8
 STARTUP_ANIMATION_FADE_OUT_SEC = 0.45
@@ -247,6 +248,7 @@ COLORS = {
     "shadow": (53, 48, 41),
     "target": (83, 151, 112),
     "audio": (91, 154, 166),
+    "tactile": (190, 132, 158),
     "visual": (103, 145, 169),
     "object": (151, 121, 149),
     "warning": (213, 151, 78),
@@ -257,12 +259,7 @@ COLORS = {
 }
 
 
-def update_layout(
-    width: float,
-    height: float,
-    left_collapsed: bool = False,
-    log_height: float | None = None,
-) -> None:
+def update_layout(width: float, height: float, left_collapsed: bool = False, log_height: float | None = None):
     """Update shared responsive UI bounds without touching simulation data."""
 
     global WINDOW_WIDTH, WINDOW_HEIGHT

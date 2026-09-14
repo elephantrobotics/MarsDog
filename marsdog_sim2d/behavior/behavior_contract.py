@@ -17,7 +17,8 @@ from typing import Any
 
 
 CONTRACT_PATH = (
-    Path(__file__).with_name("assets")
+    Path(__file__).parent.parent
+    / "assets"
     / "config"
     / "behavior_tree_actions.yaml"
 )
@@ -27,7 +28,8 @@ _STAGE_RE = re.compile(r"^ {6}- stage_id:\s*([A-Za-z0-9_]+)\s*$")
 _ORDER_RE = re.compile(r"^ {8}order:\s*(\d+)\s*$")
 _REQUIRED_RE = re.compile(r"^ {8}required:\s*(true|false)\s*$", re.IGNORECASE)
 _ACTION_RE = re.compile(
-    r"^ {10}- \{unit_id:\s*(ACT_[A-Za-z0-9_]+)}\s*$"
+    r"^ {10}- \{unit_id:\s*(ACT_[A-Za-z0-9_]+)"
+    r"(?:,\s*duration_sec:\s*\[(\d+(?:\.\d+)?),\s*(\d+(?:\.\d+)?)])?}\s*$"
 )
 
 
@@ -37,6 +39,7 @@ class ContractStage:
     order: int
     required: bool
     candidates: tuple[str, ...]
+    duration_ranges: tuple[tuple[float, float] | None, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +53,7 @@ class SelectedStage:
     stage_id: str
     order: int
     action_id: str
+    duration_sec: float | None = None
 
 
 @lru_cache(maxsize=1)
@@ -64,9 +68,11 @@ def load_behavior_contract() -> dict[str, BehaviorContract]:
     stage_order = 0
     stage_required = True
     candidates: list[str] = []
+    duration_ranges: list[tuple[float, float] | None] = []
 
     def finish_stage() -> None:
-        nonlocal stage_id, stage_order, stage_required, candidates
+        nonlocal stage_id, stage_order, stage_required
+        nonlocal candidates, duration_ranges
         if stage_id is None:
             return
         if not candidates:
@@ -79,12 +85,14 @@ def load_behavior_contract() -> dict[str, BehaviorContract]:
                 order=stage_order or len(stages) + 1,
                 required=stage_required,
                 candidates=tuple(candidates),
+                duration_ranges=tuple(duration_ranges),
             )
         )
         stage_id = None
         stage_order = 0
         stage_required = True
         candidates = []
+        duration_ranges = []
 
     def finish_behavior() -> None:
         nonlocal behavior_name, stages
@@ -137,12 +145,22 @@ def load_behavior_contract() -> dict[str, BehaviorContract]:
                     f"{CONTRACT_PATH}:{line_number}: action before stage"
                 )
             candidates.append(action_match.group(1))
+            minimum = action_match.group(2)
+            maximum = action_match.group(3)
+            if minimum is None or maximum is None:
+                duration_ranges.append(None)
+                continue
+
+            duration_range = (float(minimum), float(maximum))
+            if duration_range[0] > duration_range[1]:
+                raise ValueError(
+                    f"{CONTRACT_PATH}:{line_number}: invalid duration range"
+                )
+            duration_ranges.append(duration_range)
 
     finish_behavior()
-    if len(behaviors) != 53:
-        raise ValueError(
-            f"{CONTRACT_PATH}: expected 53 behaviors, found {len(behaviors)}"
-        )
+    if not behaviors:
+        raise ValueError(f"{CONTRACT_PATH}: no behaviors found")
     return behaviors
 
 
@@ -150,6 +168,7 @@ def select_behavior_stages(
     behavior_name: str,
     *,
     rng: Any = None,
+    stage_preferences: dict[str, str] | None = None,
 ) -> tuple[SelectedStage, ...]:
     """Select one exact ACT candidate for every ordered stage."""
 
@@ -157,15 +176,38 @@ def select_behavior_stages(
     if contract is None:
         return ()
     generator = rng or random
-    return tuple(
-        SelectedStage(
-            stage_id=stage.stage_id,
-            order=stage.order,
-            action_id=generator.choice(stage.candidates),
+    selected: list[SelectedStage] = []
+    for stage in contract.stages:
+        if not stage.required and not stage.candidates:
+            continue
+
+        preferred_action = (stage_preferences or {}).get(stage.stage_id)
+        if (
+            preferred_action is not None
+            and preferred_action not in stage.candidates
+        ):
+            raise ValueError(
+                f"{preferred_action!r} is not declared by "
+                f"{behavior_name!r} Stage {stage.stage_id!r}"
+            )
+        action_id = preferred_action or generator.choice(stage.candidates)
+        duration_range = stage.duration_ranges[
+            stage.candidates.index(action_id)
+        ]
+        duration_sec = (
+            generator.uniform(*duration_range)
+            if duration_range is not None
+            else None
         )
-        for stage in contract.stages
-        if stage.required or stage.candidates
-    )
+        selected.append(
+            SelectedStage(
+                stage_id=stage.stage_id,
+                order=stage.order,
+                action_id=action_id,
+                duration_sec=duration_sec,
+            )
+        )
+    return tuple(selected)
 
 
 def direct_behavior_names() -> tuple[str, ...]:

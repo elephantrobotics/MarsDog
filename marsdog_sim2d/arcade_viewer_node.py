@@ -8,40 +8,47 @@ import logging
 import math
 import queue
 import random
-import threading
 import time
+import typing as T
 from typing import Sequence
 
 import arcade
 import arcade.gui
-import rclpy
-from rclpy.executors import MultiThreadedExecutor
 
-from . import config
-from .components.drawing import draw_text
-from .event_injector import (
-    InjectionCommand,
-    MANUAL_SOURCE,
-    build_custom_injection_command,
-    build_scenario_command,
-    command_from_payload_preview,
-    default_field_values,
-    place_injection_command,
-    resolve_emotion_output,
-    resolve_need_output,
+from marsdog_sim2d import config, utils
+
+from marsdog_sim2d.components.text import draw_text
+from marsdog_sim2d.simevent.event_injector import InjectionCommand, MANUAL_SOURCE
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.simevent.abnormal_simulation import (
+    abnormal_emotion_delta,
+    advance_abnormal_step,
+    apply_abnormal_step,
+    next_abnormal_level,
+    normalize_abnormal_level,
+    should_finish_abnormal_simulation,
 )
-from .feeding_interface import FeedingCoordinator
-from marsdog_sim2d.views.left_panel import LeftControlPanel
-from marsdog_sim2d.views.renderer import WorldRenderer
-from .ros_bridge import RosBridge
-from .sim_state import SimEvent, SimState
-from .virtual_executor import LocalVirtualRunner
-from .voice_commands import (
-    VoiceCommandSpec,
-    is_external_command_behavior,
-    resolve_voice_command,
+
+from marsdog_sim2d.bridge.feeding_interface import FeedingCoordinator
+from marsdog_sim2d.controllers.left_panel_controller import (
+    LeftPanelController,
+    PanelEffect,
 )
-from marsdog_sim2d.views.widgets import StatusWidgets
+from marsdog_sim2d.pages.left_panel import LeftControlPanel
+from marsdog_sim2d.pages.renderer import WorldRenderer
+
+from marsdog_sim2d.bridge.ros_bridge import RosBridgeThreadExecutor
+
+from marsdog_sim2d.simevent.sim_state import SimState
+from marsdog_sim2d.bridge.virtual_executor import LocalVirtualRunner
+from marsdog_sim2d.behavior.feeding_behavior import (
+    HUNGER_BEHAVIORS,
+    HUNGER_WAIT_ACTIONS,
+    URGENT_HUNGER_BEHAVIORS,
+    select_hunger_behavior,
+)
+from marsdog_sim2d.behavior.voice_commands import VoiceCommandSpec, is_external_command_behavior, resolve_voice_command
+from marsdog_sim2d.pages.widgets import StatusWidgets
 
 LOGGER = logging.getLogger("marsdog_sim2d")
 
@@ -74,12 +81,14 @@ FOLLOW_STATIONARY_TIMEOUT_SEC = 30.0
 MANUAL_NEED_BEHAVIORS = {
     "HUNGER": ("seekFood", 5.5),
     "BLADDER": ("barkShortAlert", 5.0),
-    "SLEEPINESS": ("sleepNow", 6.0),
+    "SLEEPINESS": ("sleepOnSide", 6.0),
     "CLEANLINESS": ("lickPaws", 4.5),
-    "ENERGY": ("recharge", 5.5),
+    "ENERGY": ("restInPlace", 5.5),
     "SOCIAL": ("seekInteraction", 4.5),
     "EXPLORATION": ("exploreRoom", 5.5),
 }
+SLEEPINESS_BEHAVIORS = frozenset({"sleepOnSide", "sleepNow"})
+ENERGY_BEHAVIORS = frozenset({"restInPlace", "recharge"})
 MANUAL_NEED_RECOVERY = {
     "HUNGER": ("Hunger", 42.0),
     "BLADDER": ("Bladder", 35.0),
@@ -124,15 +133,9 @@ class SimWindow(arcade.Window):
         sim_state: SimState,
         event_queue: queue.Queue[SimEvent],
         injection_queue: queue.Queue[InjectionCommand],
-        feeding_coordinator: FeedingCoordinator | None = None,
+        feeding_coordinator: FeedingCoordinator,
     ) -> None:
-        super().__init__(
-            config.WINDOW_WIDTH,
-            config.WINDOW_HEIGHT,
-            config.WINDOW_TITLE,
-            resizable=True,
-            visible=False,
-        )
+        super().__init__(config.WINDOW_WIDTH, config.WINDOW_HEIGHT, config.WINDOW_TITLE, resizable=True, visible=False)
         self.set_minimum_size(config.MIN_WINDOW_WIDTH, config.MIN_WINDOW_HEIGHT)
         self._startup_elapsed_sec = 0.0
         self._startup_frame_drawn = False
@@ -150,9 +153,8 @@ class SimWindow(arcade.Window):
             self._handle_confirmation_action,
         )
         self.local_runner = LocalVirtualRunner()
-        self.feeding_coordinator = (
-            feeding_coordinator or FeedingCoordinator()
-        )
+        self.feeding_coordinator = feeding_coordinator
+
         self._emotion_idle_goal_id: str | None = None
         self._voice_local_goal_id: str | None = None
         self._last_voice_audio_at: float | None = None
@@ -168,19 +170,19 @@ class SimWindow(arcade.Window):
         self._visual_idle_block_until = 0.0
         self._calm_idle_index = 0
         self._next_emotion_idle_at = time.monotonic() + EMOTION_IDLE_INITIAL_DELAY_SEC
-        if not self.sim_state.event_injector_fields:
-            self.sim_state.event_injector_fields.update(default_field_values())
-        self.sim_state.event_injector_fields.setdefault("personality_trait", "A")
         config.update_layout(
             self.width,
             self.height,
             self.sim_state.ui_left_collapsed,
             self.sim_state.ui_log_height,
         )
-        self._refresh_payload_preview()
+        self.injection_form = self.sim_state.injection_form
+        self.left_panel_controller = LeftPanelController(self.injection_form)
+        self.left_panel_controller.refresh_payload_preview()
         self.left_panel = LeftControlPanel(
             self,
             self.sim_state,
+            self.injection_form,
             self._handle_left_panel_action,
             manager=self.ui_manager,
         )
@@ -196,6 +198,9 @@ class SimWindow(arcade.Window):
         self.sim_state.drain_queue(self.event_queue)
         self._sync_feeding_interface()
         if self.sim_state.ui_abnormal_simulation_active:
+            advance_abnormal_step(self.sim_state)
+            if should_finish_abnormal_simulation(self.sim_state):
+                self._toggle_abnormal_simulation()
             return
 
         self._replay_deferred_abnormal_event()
@@ -262,7 +267,7 @@ class SimWindow(arcade.Window):
             self.sim_state.ui_log_height,
         )
         self.clear()
-        renderer.draw(self.sim_state)
+        renderer.draw(self.sim_state, self.injection_form)
         draw_native_gui = self.left_panel.sync()
         self.widgets.draw(self.sim_state)
         if draw_native_gui:
@@ -387,7 +392,7 @@ class SimWindow(arcade.Window):
         if self.sim_state.ui_payload_preview_expanded:
             if symbol == arcade.key.ESCAPE:
                 self.sim_state.ui_payload_preview_expanded = False
-                self.sim_state.ui_payload_preview_scroll = 0
+                self.injection_form.payload_preview_scroll = 0
             return
         if self.sim_state.ui_pending_confirmation:
             if symbol == arcade.key.ESCAPE:
@@ -438,8 +443,7 @@ class SimWindow(arcade.Window):
             _move_virtual_user_from_screen(self.sim_state, x, y)
 
         hovered_item = self.widgets.hit_test(x, y)
-        if hasattr(self, "left_panel"):
-            self.left_panel.update_mouse_cursor(x, y, "hand" if hovered_item else "default")
+        self.left_panel.update_mouse_cursor(x, y, "hand" if hovered_item else "default")
 
         self.widgets.set_hover(x, y)
 
@@ -514,6 +518,13 @@ class SimWindow(arcade.Window):
 
         if action == "toggle_abnormal_simulation":
             self._toggle_abnormal_simulation()
+            return
+
+        if action == "cycle_abnormal_level":
+            if not self.sim_state.ui_abnormal_simulation_active:
+                self.sim_state.ui_abnormal_level = next_abnormal_level(
+                    self.sim_state.ui_abnormal_level
+                )
             return
 
         if action == "toggle_bowl_food":
@@ -592,43 +603,18 @@ class SimWindow(arcade.Window):
         return False
 
     def _handle_left_panel_action(self, item: dict[str, object]) -> bool:
-        """Apply an action emitted by the native left control panel."""
+        """Coordinate UI-only changes and delegate injection form actions."""
         action = str(item.get("action") or "")
-        if action == "collapse_left":
-            self.sim_state.ui_left_collapsed = True
+        if action in {"collapse_left", "expand_left", "collapsed_tab"}:
+            self.sim_state.ui_left_collapsed = action == "collapse_left"
             config.update_layout(
                 self.width,
                 self.height,
-                True,
+                self.sim_state.ui_left_collapsed,
                 self.sim_state.ui_log_height,
             )
-            return True
-
-        if action == "expand_left":
-            self.sim_state.ui_left_collapsed = False
-            config.update_layout(
-                self.width,
-                self.height,
-                False,
-                self.sim_state.ui_log_height,
-            )
-            return True
-
-        if action in {"input_tab", "collapsed_tab"}:
-            self.sim_state.ui_input_tab = str(item["tab"])
-            if action == "collapsed_tab":
-                self.sim_state.ui_left_collapsed = False
-            self._normalize_group_for_tab()
-            self._refresh_payload_preview()
-            return True
-
-        if action == "select_option":
-            self._apply_select_option(item)
-            return True
-
-        if action == "field_changed":
-            self._refresh_payload_preview()
-            return True
+            if action != "collapsed_tab":
+                return True
 
         if action == "show_payload_preview":
             self.sim_state.ui_payload_preview_expanded = True
@@ -639,54 +625,69 @@ class SimWindow(arcade.Window):
             self.sim_state.ui_payload_preview_expanded = False
             return True
 
-        if action == "placement_mode":
-            group = str(item["group"])
-            if group == "Audio":
-                self.sim_state.ui_input_tab = "Event"
-                self.sim_state.event_injector_group = "Audio"
+        effect = self.left_panel_controller.handle_action(
+            item,
+            pending_placement=self.sim_state.ui_pending_placement,
+            user_visible=self.sim_state.ui_user_visible,
+            internal_need_active=_internal_need_owns_control(self),
+        )
+        if effect is None:
+            return False
 
-            pending = self.sim_state.ui_pending_placement
-            if pending and pending.get("group") == group:
-                self.sim_state.ui_pending_placement = None
-            else:
-                self.sim_state.ui_pending_placement = {
-                    "group": group,
-                    "kind": self._placement_kind(group),
-                    "x": None,
-                    "y": None,
-                }
+        self._apply_left_panel_effect(effect)
+        return True
 
-            self._refresh_payload_preview()
-            return True
+    def _apply_left_panel_effect(self, effect: PanelEffect) -> None:
+        """Apply controller output while keeping UI and queue ownership here."""
+        if effect.stop_requested:
+            self._handle_stop_voice_command()
 
-        if action in {"send_event", "send_command"}:
-            self._send_custom_injection(
-                "Audio" if action == "send_command" else None
+        if effect.confirmation is not None:
+            self.sim_state.ui_pending_confirmation = effect.confirmation
+
+        if effect.placement_changed:
+            self.sim_state.ui_pending_placement = effect.pending_placement
+
+        if effect.user_position is not None:
+            normalized_x, normalized_y = effect.user_position
+            self.sim_state.user_x = config.SCENE_LOGICAL_LEFT + normalized_x * (
+                config.SCENE_LOGICAL_RIGHT - config.SCENE_LOGICAL_LEFT
             )
-            return True
-
-        if action == "command_quick":
-            self.sim_state.event_injector_fields["audio_command_id"] = str(
-                item["command_id"]
+            self.sim_state.user_y = config.SCENE_LOGICAL_TOP - normalized_y * (
+                config.SCENE_LOGICAL_TOP - config.SCENE_LOGICAL_BOTTOM
             )
-            self.sim_state.event_injector_fields["audio_asr_text"] = str(
-                item.get("asr_text") or ""
+
+        if effect.command is not None:
+            self.injection_queue.put(effect.command)
+            LOGGER.info("Queued manual ROS2 injection: %s", effect.command.label)
+
+        if effect.local_event is not None:
+            self.sim_state.apply_event(effect.local_event)
+            if effect.external_damage is not None:
+                self._start_external_damage_simulation(
+                    effect.external_damage
+                )
+            elif effect.local_behavior is not None:
+                self._start_local_behavior(
+                    effect.local_behavior,
+                    preferred_action=effect.preferred_action,
+                )
+            LOGGER.info(
+                "Applied local %s simulation: %s",
+                effect.local_event.kind,
+                effect.local_event.payload.get("event_type"),
             )
-            self.sim_state.event_injector_fields[
-                "audio_event_type"
-            ] = "EVT_VOICE_COMMAND_KNOWN"
-            self._refresh_payload_preview()
-            self._send_custom_injection("Audio")
-            return True
 
-        if action == "publish_state_output":
-            self._request_state_output()
-            return True
-
-        if action == "scenario":
-            self._request_scenario(str(item.get("scenario_id", "")))
-            return True
-        return False
+    def _confirm_pending_action(self) -> None:
+        pending = self.sim_state.ui_pending_confirmation or {}
+        self.sim_state.ui_pending_confirmation = None
+        effect = self.left_panel_controller.confirm(
+            pending,
+            pending_placement=self.sim_state.ui_pending_placement,
+            user_visible=self.sim_state.ui_user_visible,
+            internal_need_active=_internal_need_owns_control(self),
+        )
+        self._apply_left_panel_effect(effect)
 
     def on_mouse_release(
         self,
@@ -756,7 +757,11 @@ class SimWindow(arcade.Window):
             self.sim_state.ui_log_auto_scroll = False
             self.sim_state.ui_log_scroll = max(0, self.sim_state.ui_log_scroll - int(scroll_y * 2))
 
-    def _start_local_behavior(self, behavior_name: str) -> None:
+    def _start_local_behavior(
+        self,
+        behavior_name: str,
+        preferred_action: str | None = None,
+    ) -> None:
         if self.sim_state.ui_abnormal_simulation_active:
             return
         self._emotion_idle_goal_id = None
@@ -765,7 +770,10 @@ class SimWindow(arcade.Window):
         self._calm_idle_index = 0
         self._next_emotion_idle_at = time.monotonic() + CALM_IDLE_TRANSITION_SEC
         self.local_runner.sync_from_state(self.sim_state)
-        event = self.local_runner.start(behavior_name)
+        event = self.local_runner.start(
+            behavior_name,
+            preferred_action=preferred_action,
+        )
         self.sim_state.apply_event(event)
         LOGGER.info("Started local virtual behavior self-test: %s", behavior_name)
 
@@ -803,6 +811,26 @@ class SimWindow(arcade.Window):
             pause_runner()
         _activate_abnormal_simulation(self.sim_state)
         LOGGER.info("UI abnormal simulation activated")
+
+    def _start_external_damage_simulation(
+        self,
+        damage: dict[str, object],
+    ) -> None:
+        """Start one local damage response through the abnormal UI lock."""
+
+        if self.sim_state.ui_abnormal_simulation_active:
+            LOGGER.warning(
+                "Ignored external damage demo while another abnormal demo is active"
+            )
+            return
+        pause_runner = getattr(self.local_runner, "pause", None)
+        if callable(pause_runner):
+            pause_runner()
+        _activate_abnormal_simulation(self.sim_state, damage=damage)
+        LOGGER.info(
+            "UI external damage simulation activated: %s",
+            damage.get("event_type"),
+        )
 
     def _replay_deferred_abnormal_event(self) -> None:
         """Resume buffered external stages at a visible, ordered pace."""
@@ -860,7 +888,7 @@ class SimWindow(arcade.Window):
                         # system to call the service, so it authorizes itself.
                         self.sim_state.ui_food_eating_authorized = True
                         self.sim_state.release_food_wait()
-            SimWindow._sync_feeding_interface(self)
+            self._sync_feeding_interface()
             LOGGER.info(
                 "UI food added to bowl%s",
                 (
@@ -881,14 +909,11 @@ class SimWindow(arcade.Window):
             current_action,
             motion_queued=self.sim_state.virtual_motion_active(),
         )
-        SimWindow._sync_feeding_interface(self)
+        self._sync_feeding_interface()
         LOGGER.info("UI food removed from bowl")
 
     def _sync_feeding_interface(self) -> None:
-        coordinator = getattr(self, "feeding_coordinator", None)
-        if coordinator is None:
-            return
-        coordinator.update_from_ui(
+        self.feeding_coordinator.update_from_ui(
             food_available=self.sim_state.ui_bowl_has_food,
             dog_at_bowl=_food_interaction_ready(self.sim_state),
             waiting_for_food=self.sim_state.ui_food_waiting,
@@ -1003,21 +1028,14 @@ class SimWindow(arcade.Window):
 
         internal_need_active = _internal_need_owns_control(self)
         pending_voice = self._pending_voice_command
-        pending_was_external = (
-            pending_voice is not None
-            and is_external_command_behavior(
-                pending_voice[0].behavior_name
-            )
-        )
+        pending_was_external = pending_voice is not None and is_external_command_behavior(pending_voice[0].behavior_name)
         self._pending_voice_command = None
 
         # Stop also clears an external Follow request that was paused behind a
         # need, but it must never cancel the need plan that currently owns the
         # local runner.
-        follow_was_requested = (
-            self.sim_state.ui_follow_user_requested
-            or self.sim_state.ui_follow_user_active
-        )
+
+        follow_was_requested = self.sim_state.ui_follow_user_requested or self.sim_state.ui_follow_user_active
         self.sim_state.ui_follow_user_requested = False
         self.sim_state.ui_follow_user_active = False
         self.sim_state.ui_follow_goal_id = None
@@ -1142,6 +1160,25 @@ class SimWindow(arcade.Window):
         if behavior_spec is None:
             return
         behavior_name, duration = behavior_spec
+        if demand == "HUNGER":
+            hunger_value = utils.safe_float(signal.get("value"), 0.0)
+            behavior_name = select_hunger_behavior(
+                hunger_value,
+                food_available=self.sim_state.ui_bowl_has_food,
+            )
+            duration = 0.0
+        elif demand == "SLEEPINESS":
+            behavior_name = (
+                "sleepNow"
+                if level in {"OVERFLOW", "CRITICAL"}
+                else "sleepOnSide"
+            )
+        elif demand == "ENERGY":
+            behavior_name = (
+                "recharge"
+                if level in {"OVERFLOW", "CRITICAL"}
+                else "restInPlace"
+            )
         self._pending_manual_need = (
             behavior_name,
             duration,
@@ -1160,6 +1197,12 @@ class SimWindow(arcade.Window):
         if pending is None or self.sim_state.ui_abnormal_simulation_active:
             return
         behavior_name, duration, received_at, demand = pending
+        if demand == "HUNGER":
+            urgent = behavior_name in URGENT_HUNGER_BEHAVIORS
+            behavior_name = HUNGER_BEHAVIORS[
+                (urgent, self.sim_state.ui_bowl_has_food)
+            ]
+            duration = 0.0
 
         local_goal_ids = {
             goal_id
@@ -1205,18 +1248,24 @@ class SimWindow(arcade.Window):
         self._pending_voice_command = None
         self._calm_idle_index = 0
         self.local_runner.sync_from_state(self.sim_state)
+        local_params = (
+            {
+                "toilet_spot_taught": (
+                    self.sim_state.injection_form.fields.get(
+                        "toilet_spot_taught",
+                        "false",
+                    )
+                    == "true"
+                )
+            }
+            if demand == "BLADDER"
+            else None
+        )
         event = self.local_runner.start(
             behavior_name,
             timeout_sec=duration,
-            preferred_action=(
-                "ACT_SNIFF_BOWL_AND_WAIT_FOR_FOOD"
-                if demand == "HUNGER"
-                else (
-                    "ACT_SNIFF_AND_CIRCLE_AT_TOILET_SPOT"
-                    if demand == "BLADDER"
-                    else None
-                )
-            ),
+            params=local_params,
+            preferred_action=HUNGER_WAIT_ACTIONS.get(behavior_name),
         )
         self._manual_need_local_goal_id = (
             self.local_runner.plan.goal_id
@@ -1226,10 +1275,16 @@ class SimWindow(arcade.Window):
         self._manual_need_local_demand = demand
         self._manual_need_triggered_at = received_at
         self._manual_hunger_phase = (
-            "seeking"
+            (
+                "seeking"
+                if behavior_name in HUNGER_WAIT_ACTIONS
+                else "eating"
+            )
             if demand == "HUNGER"
             else None
         )
+        if self._manual_hunger_phase == "eating":
+            self.sim_state.ui_food_eating_authorized = True
         self._next_emotion_idle_at = (
             time.monotonic()
             + (
@@ -1290,12 +1345,21 @@ class SimWindow(arcade.Window):
         ):
             SimWindow._start_manual_hunger_eating(self)
             return
+        active_behavior = str(self.sim_state.active_behavior or "")
+        hunger_behaviors = set(HUNGER_BEHAVIORS.values())
+        dynamic_need_behavior = (
+            demand == "HUNGER" and active_behavior in hunger_behaviors
+        ) or (
+            demand == "SLEEPINESS"
+            and active_behavior in SLEEPINESS_BEHAVIORS
+        ) or (
+            demand == "ENERGY"
+            and active_behavior in ENERGY_BEHAVIORS
+        )
         expected_behavior = (
-            "eatNormally"
-            if demand == "HUNGER" and self._manual_hunger_phase == "eating"
-            else (
-                MANUAL_NEED_BEHAVIORS.get(demand or "", ("", 0.0))[0]
-            )
+            active_behavior
+            if dynamic_need_behavior
+            else MANUAL_NEED_BEHAVIORS.get(demand or "", ("", 0.0))[0]
         )
         action_completed = (
             bool(expected_behavior)
@@ -1321,9 +1385,16 @@ class SimWindow(arcade.Window):
         self._manual_hunger_phase = None
 
     def _start_manual_hunger_eating(self) -> None:
-        """Replace a completed/waiting seek Goal with exact eatNormally."""
+        """Replace a completed/waiting seek Goal with its eating behavior."""
 
         plan = self.local_runner.plan
+        urgent = (
+            (
+                plan is not None
+                and plan.behavior_name == "seekFoodUrgently"
+            )
+            or self.sim_state.active_behavior == "seekFoodUrgently"
+        )
         if plan is not None:
             cancel_event = self.local_runner.cancel(
                 "Food supplied; continue with four-stage eating"
@@ -1337,9 +1408,10 @@ class SimWindow(arcade.Window):
             self.sim_state.clear_food_gate()
 
         self.local_runner.sync_from_state(self.sim_state)
+        behavior_name = HUNGER_BEHAVIORS[(urgent, True)]
         event = self.local_runner.start(
-            "eatNormally",
-            timeout_sec=8.0,
+            behavior_name,
+            timeout_sec=0.0,
         )
         self._manual_need_local_goal_id = (
             self.local_runner.plan.goal_id
@@ -1351,7 +1423,8 @@ class SimWindow(arcade.Window):
         self.sim_state.ui_food_eating_authorized = True
         self.sim_state.apply_event(event)
         LOGGER.info(
-            "Food supplied; manual hunger advanced to eatNormally"
+            "Food supplied; manual hunger advanced to %s",
+            behavior_name,
         )
 
     def _maybe_start_voice_command(self) -> None:
@@ -1777,233 +1850,40 @@ class SimWindow(arcade.Window):
             return True
         return True
 
-    def _send_custom_injection(self, forced_group: str | None = None) -> None:
-        self.sim_state.event_injector_fields = {
-            **default_field_values(),
-            **self.sim_state.event_injector_fields,
-        }
-        group = forced_group or self.sim_state.event_injector_group
-        fields = self._resolved_fields(group)
-        if (
-            _voice_command_requires_visible_user(group, fields)
-            and not self.sim_state.ui_user_visible
-        ):
-            self.sim_state.ui_pending_confirmation = {
-                "kind": "alert",
-                "title": "提示",
-                "message": "没有识别到主人",
-            }
-            return
-        if _fields_request_stop(group, fields):
-            if _internal_need_owns_control(self):
-                SimWindow._handle_stop_voice_command(self)
-                self.sim_state.ui_pending_confirmation = {
-                    "kind": "alert",
-                    "title": "提示",
-                    "message": "内部需求正在执行，停止指令已忽略",
-                }
-                return
-            # Apply the presentation-side stop immediately instead of waiting
-            # for the ROS echo or Action cancellation round trip.
-            SimWindow._handle_stop_voice_command(self)
-        command = build_custom_injection_command(
-            group,
-            fields,
-        )
-        placement = self.sim_state.ui_pending_placement
-        if placement and placement.get("group") == group and placement.get("normalized_x") is not None:
-            command = place_injection_command(
-                command,
-                float(placement["normalized_x"]),
-                float(placement["normalized_y"]),
-            )
-        command = SimWindow._resolve_payload_preview_command(self, command)
-        if command is None:
-            return
-        if (
-            placement
-            and group == "Vision"
-            and placement.get("kind") == "human"
-            and placement.get("normalized_x") is not None
-        ):
-            normalized_x = float(placement["normalized_x"])
-            normalized_y = float(placement["normalized_y"])
-            self.sim_state.user_x = config.SCENE_LOGICAL_LEFT + normalized_x * (
-                config.SCENE_LOGICAL_RIGHT - config.SCENE_LOGICAL_LEFT
-            )
-            self.sim_state.user_y = config.SCENE_LOGICAL_TOP - normalized_y * (
-                config.SCENE_LOGICAL_TOP - config.SCENE_LOGICAL_BOTTOM
-            )
-        self.injection_queue.put(command)
-        self.sim_state.ui_pending_placement = None
-        self._refresh_payload_preview()
-        LOGGER.info("Queued custom ROS2 event injection: %s", command.label)
-
-    def _apply_select_option(self, item: dict[str, object]) -> None:
-        target = str(item.get("target") or "")
-        value = str(item.get("value") or "")
-        if target == "event_group":
-            self.sim_state.event_injector_group = value
-        elif target == "field":
-            field_id = str(item.get("field_id") or "")
-            self.sim_state.event_injector_fields[field_id] = value
-        self._refresh_payload_preview()
-
-    def _normalize_group_for_tab(self) -> None:
-        if (
-            self.sim_state.ui_input_tab == "Event"
-            and self.sim_state.event_injector_group
-            not in {"Audio", "Vision", "Result"}
-        ):
-            self.sim_state.event_injector_group = "Audio"
-        elif (
-            self.sim_state.ui_input_tab == "State"
-            and self.sim_state.event_injector_group
-            not in {"Need", "Emotion", "Personality"}
-        ):
-            self.sim_state.event_injector_group = "Need"
-        elif self.sim_state.ui_input_tab == "Command":
-            self.sim_state.event_injector_group = "Audio"
-            self.sim_state.event_injector_fields["audio_event_type"] = "EVT_VOICE_COMMAND_KNOWN"
-
-    def _refresh_payload_preview(self) -> None:
-        try:
-            if self.sim_state.ui_input_tab == "Scenario":
-                command = build_scenario_command(self.sim_state.ui_selected_scenario)
-            else:
-                group = "Audio" if self.sim_state.ui_input_tab == "Command" else self.sim_state.event_injector_group
-                command = build_custom_injection_command(group, self._resolved_fields(group))
-                placement = self.sim_state.ui_pending_placement
-                if placement and placement.get("group") == group and placement.get("normalized_x") is not None:
-                    command = place_injection_command(
-                        command,
-                        float(placement["normalized_x"]),
-                        float(placement["normalized_y"]),
-                    )
-            self.sim_state.ui_preview_topics = list(dict.fromkeys(message.topic for message in command.messages))
-            preview = [
-                {"topic": message.topic, "payload": message.payload}
-                for message in command.messages
-            ]
-            self.sim_state.ui_payload_preview = json.dumps(preview, ensure_ascii=False, indent=2, default=str)
-        except Exception as exc:
-            self.sim_state.ui_preview_topics = []
-            self.sim_state.ui_payload_preview = f"Preview unavailable: {exc}"
-        self.sim_state.ui_payload_preview_dirty = False
-        self.sim_state.ui_payload_preview_scroll = 0
-
-    def _resolve_payload_preview_command(
-        self,
-        command: InjectionCommand,
-    ) -> InjectionCommand | None:
-        if not self.sim_state.ui_payload_preview_dirty:
-            return command
-
-        try:
-            return command_from_payload_preview(
-                command,
-                self.sim_state.ui_payload_preview,
-            )
-        except ValueError as exc:
-            self.sim_state.ui_pending_confirmation = {
-                "kind": "alert",
-                "title": "Payload 无效",
-                "message": str(exc),
-            }
-            return None
-
-    def _resolved_fields(self, group: str) -> dict[str, str]:
-        fields = {**default_field_values(), **self.sim_state.event_injector_fields}
-        if group == "Need":
-            level, event_type = resolve_need_output(
-                fields.get("need_demand", "Hunger"),
-                _safe_float(fields.get("need_value"), 82.0),
-            )
-            fields["need_level"] = level
-            fields["need_event_type"] = event_type
-        if group == "Emotion":
-            level, event_type, _level_range = resolve_emotion_output(
-                fields.get("emotion_name", "Joy"),
-                _safe_float(fields.get("emotion_value"), 90.0),
-            )
-            fields["emotion_level"] = level
-            fields["emotion_event_type"] = event_type or ""
-        return fields
-
-    def _request_state_output(self) -> None:
-        group = self.sim_state.event_injector_group
-        fields = self._resolved_fields(group)
-        dangerous = fields.get("need_level") == "OVERFLOW" or (
-            group == "Emotion"
-            and fields.get("emotion_name") == "Fear"
-            and fields.get("emotion_level") == "HIGH"
-        )
-        if dangerous:
-            self.sim_state.ui_pending_confirmation = {
-                "kind": "state_output",
-                "group": group,
-                "message": f"确认发布处于高风险等级的模拟 {group} 输出？",
-            }
-            return
-        self._send_custom_injection(group)
-
-    def _request_scenario(self, scenario_id: str) -> None:
-        self.sim_state.ui_selected_scenario = scenario_id
-        self._refresh_payload_preview()
-        if scenario_id in {"high_hunger", "low_energy", "fear_response"}:
-            self.sim_state.ui_pending_confirmation = {
-                "kind": "scenario",
-                "scenario_id": scenario_id,
-                "message": f"确认运行场景“{scenario_id}”？这可能触发紧急行为。",
-            }
-            return
-        self._send_scenario(scenario_id)
-
-    def _send_scenario(self, scenario_id: str) -> None:
-        command = build_scenario_command(scenario_id)
-        self.injection_queue.put(command)
-        LOGGER.info("Queued manual ROS2 scenario: %s", command.label)
-
-    def _confirm_pending_action(self) -> None:
-        pending = self.sim_state.ui_pending_confirmation or {}
-        self.sim_state.ui_pending_confirmation = None
-        if pending.get("kind") == "scenario":
-            self._send_scenario(str(pending.get("scenario_id") or ""))
-        elif pending.get("kind") == "state_output":
-            self._send_custom_injection(str(pending.get("group") or self.sim_state.event_injector_group))
-
     def _place_pending_in_scene(self, x: float, y: float) -> None:
         pending = self.sim_state.ui_pending_placement
         if not pending:
             return
         normalized_x = max(0.0, min(1.0, (x - config.WORLD_LEFT) / max(1.0, config.WORLD_WIDTH)))
         normalized_y = max(0.0, min(1.0, (config.WORLD_TOP - y) / max(1.0, config.WORLD_HEIGHT)))
-        pending.update(
-            x=x,
-            y=y,
-            normalized_x=normalized_x,
-            normalized_y=normalized_y,
-            confidence=_safe_float(self.sim_state.event_injector_fields.get("audio_confidence"), 0.9),
-        )
+        wake_angle = None
         if pending.get("group") == "Audio" and self.renderer is not None:
             dog_x, dog_y = self.renderer.scene_to_screen(
                 self.sim_state.dog_x,
                 self.sim_state.dog_y,
             )
-            angle = math.degrees(math.atan2(y - dog_y, x - dog_x)) - self.sim_state.dog_heading
-            while angle > 180:
-                angle -= 360
-            while angle < -180:
-                angle += 360
-            self.sim_state.event_injector_fields["audio_wake_angle"] = f"{angle:.1f}"
-        self._refresh_payload_preview()
+            wake_angle = (
+                math.degrees(math.atan2(y - dog_y, x - dog_x))
+                - self.sim_state.dog_heading
+            )
+            while wake_angle > 180:
+                wake_angle -= 360
+            while wake_angle < -180:
+                wake_angle += 360
 
-    def _placement_kind(self, group: str) -> str:
-        if group == "Audio":
-            return "audio"
-        if self.sim_state.event_injector_fields.get("vision_object"):
-            return "object"
-        return "human"
+        pending.update(
+            x=x,
+            y=y,
+            normalized_x=normalized_x,
+            normalized_y=normalized_y,
+            confidence=utils.safe_float(
+                self.injection_form.fields.get("audio_confidence"),
+                0.9,
+            ),
+        )
+        if pending.get("group") == "Audio" and wake_angle is not None:
+            self.injection_form.fields["audio_wake_angle"] = f"{wake_angle:.1f}"
+        self.left_panel_controller.refresh_payload_preview(pending)
 
     def _copy_selected_payload(self) -> None:
         record = next(
@@ -2091,7 +1971,11 @@ def _abnormal_action_snapshot(state: SimState) -> dict[str, object]:
     return snapshot
 
 
-def _activate_abnormal_simulation(state: SimState) -> None:
+def _activate_abnormal_simulation(
+    state: SimState,
+    *,
+    damage: dict[str, object] | None = None,
+) -> None:
     """Pause the rendered action and give abnormal mode temporary control."""
 
     if state.ui_abnormal_simulation_active:
@@ -2109,7 +1993,16 @@ def _activate_abnormal_simulation(state: SimState) -> None:
         state.ui_abnormal_interrupted_goal_id = previous_goal
 
     now = time.time()
+    level = normalize_abnormal_level(state.ui_abnormal_level)
+    damage_context = dict(damage) if damage is not None else None
     state.ui_abnormal_simulation_active = True
+    state.ui_abnormal_level = level
+    state.ui_abnormal_step_index = 0
+    state.ui_abnormal_step_started_at = time.monotonic()
+    state.ui_external_damage = damage_context
+    state.ui_abnormal_emotion_delta = (
+        {} if damage_context else abnormal_emotion_delta(level)
+    )
     state.ui_dragging_user = False
     state.ui_follow_user_active = False
     state.ui_follow_goal_id = None
@@ -2123,42 +2016,72 @@ def _activate_abnormal_simulation(state: SimState) -> None:
     state.dog_motion_elapsed = 0.0
     state.dog_motion_duration = 0.0
 
-    state.active_behavior = "abnormalSimulation"
+    state.active_behavior = (
+        str(damage_context["response_name"])
+        if damage_context
+        else "abnormalSimulation"
+    )
     state.action_status = "running"
     state.action_goal_id = "ui-abnormal-simulation"
-    state.action_behavior_id = "ui-abnormal-simulation"
-    state.action_progress = 1.0
-    state.action_visual_progress = 1.0
-    state.action_visual_progress_start = 1.0
-    state.action_current_action = "ACT_VOCAL_WHINE"
-    state.action_visual_action = "ACT_VOCAL_WHINE"
+    state.action_behavior_id = (
+        str(damage_context["event_type"])
+        if damage_context
+        else "ui-abnormal-simulation"
+    )
+    state.action_progress = 0.0
+    state.action_visual_progress = 0.0
+    state.action_visual_progress_start = 0.0
+    state.action_current_action = "-"
+    state.action_visual_action = "-"
     state.action_pending_visual_action = None
     state.action_unit_type = "action"
-    state.action_message = "UI abnormal simulation active"
+    state.action_message = (
+        f"{damage_context['risk_level']} {damage_context['label']}"
+        if damage_context
+        else f"UI abnormal simulation {level} active"
+    )
     state.action_safe_to_interrupt = False
     state.action_result = "-"
-    state.action_reason = "Paused by UI abnormal simulation"
+    state.action_reason = (
+        "Paused by UI external damage simulation"
+        if damage_context
+        else "Paused by UI abnormal simulation"
+    )
     state.action_reward = None
     state.action_priority_level = None
-    state.action_params = {"source": "UI", "intent": "abnormal_simulation"}
-    state.action_stage_index = 1
-    state.action_stage_total = 1
-    state.action_stage_label = "狗狗呜咽"
-    state.action_phase = "abnormal"
+    state.action_params = {}
+    state.action_stage_index = 0
+    state.action_stage_total = 0
+    state.action_stage_label = "-"
+    state.action_phase = "external_damage" if damage_context else "abnormal"
     state.action_target_label = "-"
-    state.action_trigger_reason = "手动异常模拟"
+    state.action_trigger_reason = (
+        str(damage_context["label"])
+        if damage_context
+        else f"手动异常模拟 {level}"
+    )
     state.action_transition = "paused"
     state.action_source = "UI"
-    state.action_intent = "abnormal_simulation"
-    state.action_level = "-"
-    state.action_interaction_mode = "solo"
+    state.action_intent = (
+        "external_damage_simulation"
+        if damage_context
+        else "abnormal_simulation"
+    )
+    state.action_level = (
+        str(damage_context["risk_level"])
+        if damage_context
+        else level
+    )
+    state.action_interaction_mode = (
+        "safe_hold" if damage_context else "solo"
+    )
     state.action_completed_stages.clear()
     state.action_executed_units.clear()
     state.action_started_at = now
     state.action_updated_at = now
     state.action_result_at = None
     state.recent_action_steps.clear()
-    state.recent_action_steps.append((now, "ACT_VOCAL_WHINE"))
+    apply_abnormal_step(state, 0, now=now)
     for room_object in state.room_objects.values():
         room_object["active"] = False
 
@@ -2244,6 +2167,10 @@ def _deactivate_abnormal_simulation(state: SimState) -> float:
 
     state.ui_abnormal_paused_action = None
     state.ui_abnormal_started_monotonic = None
+    state.ui_abnormal_step_index = 0
+    state.ui_abnormal_step_started_at = None
+    state.ui_abnormal_emotion_delta = {}
+    state.ui_external_damage = None
     state.ui_abnormal_interrupted_goal_id = None
     state.ui_abnormal_replay_active = bool(
         state.ui_abnormal_deferred_events
@@ -2302,35 +2229,18 @@ def _toggle_virtual_user_motion(state: SimState) -> None:
     state.ui_dragging_user = not state.ui_dragging_user
 
 
-def _move_virtual_user_from_screen(
-    state: SimState,
-    screen_x: float,
-    screen_y: float,
-) -> None:
+def _move_virtual_user_from_screen(state: SimState, screen_x: float, screen_y: float) -> None:
     if not state.ui_user_visible:
         return
     padding_x = 48.0
     padding_y = 64.0
-    clamped_x = max(
-        config.WORLD_LEFT + padding_x,
-        min(config.WORLD_RIGHT - padding_x, screen_x),
-    )
-    clamped_y = max(
-        config.WORLD_BOTTOM + padding_y,
-        min(config.WORLD_TOP - padding_y, screen_y),
-    )
+    clamped_x = max(config.WORLD_LEFT + padding_x, min(config.WORLD_RIGHT - padding_x, screen_x))
+    clamped_y = max(config.WORLD_BOTTOM + padding_y, min(config.WORLD_TOP - padding_y, screen_y))
     normalized_x = (clamped_x - config.WORLD_LEFT) / max(1.0, config.WORLD_WIDTH)
     normalized_y = (clamped_y - config.WORLD_BOTTOM) / max(1.0, config.WORLD_HEIGHT)
-    user_x = config.SCENE_LOGICAL_LEFT + normalized_x * (
-        config.SCENE_LOGICAL_RIGHT - config.SCENE_LOGICAL_LEFT
-    )
-    user_y = config.SCENE_LOGICAL_BOTTOM + normalized_y * (
-        config.SCENE_LOGICAL_TOP - config.SCENE_LOGICAL_BOTTOM
-    )
-    moved = math.hypot(
-        user_x - state.user_x,
-        user_y - state.user_y,
-    ) > 0.01
+    user_x = config.SCENE_LOGICAL_LEFT + normalized_x * (config.SCENE_LOGICAL_RIGHT - config.SCENE_LOGICAL_LEFT)
+    user_y = config.SCENE_LOGICAL_BOTTOM + normalized_y * (config.SCENE_LOGICAL_TOP - config.SCENE_LOGICAL_BOTTOM)
+    moved = math.hypot(user_x - state.user_x, user_y - state.user_y) > 0.01
     state.user_x = user_x
     state.user_y = user_y
     if moved and state.ui_follow_user_requested:
@@ -2340,45 +2250,19 @@ def _move_virtual_user_from_screen(
 def _advance_follow_pose(state: SimState, delta_time: float) -> bool:
     """Move the rendered dog toward its offset behind the virtual person."""
 
-    target_x = max(
-        config.SCENE_LOGICAL_LEFT + 36.0,
-        min(
-            config.SCENE_LOGICAL_RIGHT - 36.0,
-            state.user_x - FOLLOW_USER_OFFSET_X,
-        ),
-    )
-    target_y = max(
-        config.SCENE_LOGICAL_BOTTOM + 36.0,
-        min(
-            config.SCENE_LOGICAL_TOP - 36.0,
-            state.user_y - FOLLOW_USER_OFFSET_Y,
-        ),
-    )
-    owner_distance = math.hypot(
-        state.user_x - state.dog_x,
-        state.user_y - state.dog_y,
-    )
+    target_x = max(config.SCENE_LOGICAL_LEFT + 36.0, min(config.SCENE_LOGICAL_RIGHT - 36.0, state.user_x - FOLLOW_USER_OFFSET_X))
+    target_y = max(config.SCENE_LOGICAL_BOTTOM + 36.0, min(config.SCENE_LOGICAL_TOP - 36.0, state.user_y - FOLLOW_USER_OFFSET_Y))
+    owner_distance = math.hypot(state.user_x - state.dog_x, state.user_y - state.dog_y)
     moving = owner_distance > config.OWNER_NEAR_DISTANCE
     distance = math.hypot(target_x - state.dog_x, target_y - state.dog_y)
-    step = (
-        min(
-            distance,
-            FOLLOW_USER_SPEED * max(0.0, min(float(delta_time), 0.12)),
-        )
-        if moving
-        else 0.0
-    )
+    step = min(distance, FOLLOW_USER_SPEED * max(0.0, min(float(delta_time), 0.12))) if moving else 0.0
+
     if distance > 0.0 and step > 0.0:
         ratio = step / distance
         state.dog_x += (target_x - state.dog_x) * ratio
         state.dog_y += (target_y - state.dog_y) * ratio
 
-    state.dog_heading = math.degrees(
-        math.atan2(
-            state.user_y - state.dog_y,
-            state.user_x - state.dog_x,
-        )
-    )
+    state.dog_heading = math.degrees(math.atan2(state.user_y - state.dog_y, state.user_x - state.dog_x))
     state.dog_motion_start_x = state.dog_x
     state.dog_motion_start_y = state.dog_y
     state.dog_motion_start_heading = state.dog_heading
@@ -2399,21 +2283,6 @@ def _is_follow_behavior(behavior_name: str | None) -> bool:
 def _is_stop_behavior(behavior_name: str | None) -> bool:
     key = str(behavior_name or "").upper().replace("-", "_").replace(" ", "_")
     return key == "EMERGENCY_STOP"
-
-
-def _fields_request_stop(group: str, fields: dict[str, str]) -> bool:
-    if str(group or "").strip().upper() != "AUDIO":
-        return False
-    command_id = str(
-        fields.get("audio_command_id") or ""
-    ).strip().upper()
-    event_type = str(
-        fields.get("audio_event_type") or ""
-    ).strip().upper()
-    return (
-        command_id in {"CMD_STOP", "CMD_EMERGENCY_STOP", "EMERGENCY_STOP"}
-        or event_type == "EVT_VOICE_COMMAND_STOP"
-    )
 
 
 def _internal_need_owns_control(window: object) -> bool:
@@ -2570,20 +2439,6 @@ def _dog_is_near_virtual_user(state: SimState) -> bool:
     )
 
 
-def _voice_command_requires_visible_user(
-    group: str,
-    fields: dict[str, str],
-) -> bool:
-    if str(group).upper() != "AUDIO":
-        return False
-    event_type = str(fields.get("audio_event_type") or "").upper()
-    command_id = str(fields.get("audio_command_id") or "").upper()
-    return (
-        event_type == "EVT_VOICE_COMMAND_KNOWN"
-        and command_id not in {"", "CMD_UNKNOWN"}
-    )
-
-
 def _visual_activity_signature(
     visual_event: dict[str, object] | None,
 ) -> tuple[str, ...] | None:
@@ -2624,7 +2479,7 @@ def _dominant_emotion_name(state: SimState) -> str:
             ranked: list[tuple[float, str]] = []
             for name, value in emotions.items():
                 item = value if isinstance(value, dict) else {}
-                ranked.append((_safe_float(item.get("value"), 0.0), str(name)))
+                ranked.append((utils.safe_float(item.get("value"), 0.0), str(name)))
             if ranked:
                 highest_value, highest_name = max(ranked)
                 explicit = highest_name if highest_value > 0.0 else None
@@ -2923,30 +2778,18 @@ def main(args: Sequence[str] | None = None) -> None:
     injection_queue: queue.Queue[InjectionCommand] = queue.Queue()
     sim_state = SimState()
     feeding_coordinator = FeedingCoordinator()
-    ros_node: RosBridge | None = None
-    ros_thread: threading.Thread | None = None
+    ros_thread_executor: T.Optional[RosBridgeThreadExecutor]  = None
 
     try:
-        rclpy.init(args=list(args) if args is not None else None)
-        ros_node = RosBridge(
-            event_queue,
-            injection_queue,
-            feeding_coordinator,
+        args = args or ()
+        ros_thread_executor = RosBridgeThreadExecutor(
+            event_queue=event_queue,
+            feeding_coordinator=feeding_coordinator,
+            injection_queue=injection_queue,
+            *args
         )
-        ros_thread = threading.Thread(
-            target=_spin_ros,
-            args=(ros_node,),
-            name="marsdog_sim2d_ros_spin",
-            daemon=True,
-        )
-        ros_thread.start()
-
-        SimWindow(
-            sim_state,
-            event_queue,
-            injection_queue,
-            feeding_coordinator,
-        )
+        ros_thread_executor.start()
+        SimWindow(sim_state, event_queue, injection_queue, feeding_coordinator)
         LOGGER.info("Arcade window initialized")
         arcade.run()
     except KeyboardInterrupt:
@@ -2955,45 +2798,17 @@ def main(args: Sequence[str] | None = None) -> None:
     except Exception:
         LOGGER.exception("Arcade/ROS2 viewer failed")
         raise
+
     finally:
         LOGGER.info("Shutting down marsdog_sim2d")
-        if rclpy.ok():
-            rclpy.shutdown()
-        if ros_thread is not None:
-            ros_thread.join(timeout=2.0)
-        if ros_node is not None:
-            ros_node.destroy_node()
+        if ros_thread_executor is not None:
+            ros_thread_executor.shutdown()
         LOGGER.info("ROS2 shutdown complete")
 
 
-def _spin_ros(ros_node: RosBridge) -> None:
-    executor = MultiThreadedExecutor(num_threads=4)
-    executor.add_node(ros_node)
-    try:
-        executor.spin()
-    except Exception as exc:  # pragma: no cover - depends on ROS2 runtime shutdown
-        if rclpy.ok():
-            LOGGER.exception("ROS2 spin failed: %s", exc)
-    finally:
-        executor.shutdown()
-
-
-def _safe_float(value: object, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _startup_overlay_alpha(elapsed_sec: float) -> int:
-    remaining_sec = max(
-        0.0,
-        config.STARTUP_ANIMATION_DURATION_SEC - elapsed_sec,
-    )
-    fade_ratio = min(
-        1.0,
-        remaining_sec / config.STARTUP_ANIMATION_FADE_OUT_SEC,
-    )
+    remaining_sec = max(0.0, config.STARTUP_ANIMATION_DURATION_SEC - elapsed_sec)
+    fade_ratio = min(1.0, remaining_sec / config.STARTUP_ANIMATION_FADE_OUT_SEC)
     return int(255 * fade_ratio)
 
 

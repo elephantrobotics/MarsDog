@@ -3,9 +3,10 @@ import time
 import unittest
 
 from marsdog_sim2d import config
-from marsdog_sim2d.sim_state import SimEvent, SimState
-from marsdog_sim2d.virtual_executor import VirtualRoom
-from marsdog_sim2d.voice_commands import OWNER_SIDE_COMMAND_BEHAVIORS
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.simevent.sim_state import SimState
+from marsdog_sim2d.bridge.virtual_executor import VirtualRoom
+from marsdog_sim2d.behavior.voice_commands import OWNER_SIDE_COMMAND_BEHAVIORS
 
 
 class UserAnchorTests(unittest.TestCase):
@@ -90,6 +91,75 @@ class InteractionAlignmentTests(unittest.TestCase):
 
         self.assertEqual((plan.target_x, plan.target_y), (bed["x"], bed["y"]))
         self.assertEqual(plan.active_object, "bed")
+
+    def test_energy_actions_use_their_declared_locations(self) -> None:
+        room = VirtualRoom(dog_x=315.0, dog_y=275.0, dog_heading=35.0)
+        starting_pose = (room.dog_x, room.dog_y, room.dog_heading)
+        rest_plan = room.build_plan(
+            {
+                "goal_id": "low-energy",
+                "behavior_name": "restInPlace",
+                "timeout_sec": 3.0,
+            }
+        )
+
+        slow_frame = room.frame_for_action(
+            rest_plan,
+            "ACT_SLOW_DOWN_IN_RESPONSE_TO_OWNER",
+            1.0,
+        )
+        self.assertEqual(
+            starting_pose,
+            tuple(
+                slow_frame["dog_pose"][key]
+                for key in ("x", "y", "heading")
+            ),
+        )
+
+        bed_frame = room.frame_for_action(
+            rest_plan,
+            "ACT_RETURN_TO_DOG_BED_FOR_CHARGING",
+            1.0,
+        )
+        bed = room.objects["bed"]
+        self.assertEqual(
+            (bed["x"], bed["y"]),
+            (bed_frame["dog_pose"]["x"], bed_frame["dog_pose"]["y"]),
+        )
+
+        recharge_plan = room.build_plan(
+            {
+                "goal_id": "critical-energy",
+                "behavior_name": "recharge",
+                "timeout_sec": 3.0,
+            }
+        )
+        charger_frame = room.frame_for_action(
+            recharge_plan,
+            "ACT_RETURN_TO_CHARGER",
+            1.0,
+        )
+        charger = room.objects["charger"]
+        self.assertEqual(
+            (charger["x"] + 48.0, charger["y"]),
+            (
+                charger_frame["dog_pose"]["x"],
+                charger_frame["dog_pose"]["y"],
+            ),
+        )
+
+        bark_frame = room.frame_for_action(
+            recharge_plan,
+            "ACT_BARK_AND_LIE_DOWN_IF_NO_CHARGER",
+            1.0,
+        )
+        self.assertEqual(
+            starting_pose,
+            tuple(
+                bark_frame["dog_pose"][key]
+                for key in ("x", "y", "heading")
+            ),
+        )
 
     def test_follow_keeps_user_fixed(self) -> None:
         room = VirtualRoom()

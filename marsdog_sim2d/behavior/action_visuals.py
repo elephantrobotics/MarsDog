@@ -187,7 +187,11 @@ _register(
     "ACT_STOP_OBSERVE_AND_TILT_HEAD",
 )
 _register("head_tilt_observe", "ACT_CHECK_OWNER", target="owner")
-_register("bark_lying", "ACT_BARK_AND_LIE_DOWN_IF_NO_CHARGER")
+_register(
+    "bark_lying",
+    "ACT_BARK_AND_LIE_DOWN_IF_NO_CHARGER",
+    target="current",
+)
 _register(
     "whine",
     "ACT_BARK_TENSE",
@@ -233,6 +237,52 @@ _register("spin", "ACT_TRICK_SPIN", "ACT_SPIN_FRONT", "ACT_SPIN_IN_PLACE")
 _register("spin", "ACT_CHASE_TAIL")
 _register("play_dead", "ACT_TRICK_PLAY_DEAD")
 _register("stand", "ACT_OBJECT_DROP")
+
+# These local abnormal self-test actions are presentation metadata, not
+# additions to the authoritative behavior-tree action contract.
+_register(
+    "stand",
+    "ACT_EMERGENCY_STOP",
+    "ACT_ALERT_STATE",
+    "ACT_ACTION_STOP",
+    "ACT_PAUSE_MOMENT",
+    "ACT_RETRY_ACTION",
+)
+_register("lie", "ACT_ADJUST_SAFE_POSTURE")
+_register(
+    "head_tilt_observe",
+    "ACT_CHECK_ABNORMAL_POSITION",
+    "ACT_QUICK_TURN_HEAD",
+    "ACT_TURN_HEAD_CHECK_CAUSE",
+    "ACT_HEAD_TILT_CHECK_TARGET",
+)
+_register(
+    "tentative_bark_whine",
+    "ACT_CONTINUOUS_BARK",
+    "ACT_SHORT_WHIMPER",
+)
+_register("shake", "ACT_BODY_FLINCH")
+_register("walk", "ACT_STEP_BACK", "ACT_CHANGE_DIRECTION_RETRY")
+_register("anxiety_cower", "ACT_EARS_BACKWARD")
+_register("sit", "ACT_SIT_LOOK_OWNER", "ACT_SIT_LOOK_AROUND")
+_register(
+    "anxiety_cower",
+    "ACT_FAULT_JOINT_SAFE_HOLD",
+    "ACT_CROUCH_JOINT_PROTECT",
+    "ACT_GUARD_INJURY",
+)
+_register(
+    "lie",
+    "ACT_STRUCTURAL_DAMAGE_HOLD",
+    "ACT_POWER_DAMAGE_SAFE_HOLD",
+    "ACT_LIE_DOWN_REASSESS",
+)
+_register("tentative_bark_whine", "ACT_RECOVERY_FAILED_CALL")
+_register("stand", "ACT_PERCEPTION_FAULT_SAFE_STOP", "ACT_BRACE_BALANCE")
+_register("sit", "ACT_HOLD_REQUEST_INSPECTION")
+_register("shake", "ACT_RELEASE_FROM_PRESSURE")
+_register("walk", "ACT_YIELD_FORCE", "ACT_REPOSITION")
+_register("head_tilt_observe", "ACT_TEST_GROUND")
 _register(
     "excite_toy",
     "ACT_OBJECT_BRING",
@@ -328,8 +378,19 @@ _register(
 _register(
     "walk",
     "ACT_RETURN_TO_CHARGER",
-    "ACT_RETURN_TO_DOG_BED_FOR_CHARGING",
     target="charger",
+    moves=True,
+)
+_register(
+    "walk",
+    "ACT_RETURN_TO_DOG_BED_FOR_CHARGING",
+    target="bed",
+    moves=True,
+)
+_register(
+    "walk",
+    "ACT_SLOW_DOWN_IN_RESPONSE_TO_OWNER",
+    target="current",
     moves=True,
 )
 

@@ -8,11 +8,41 @@ from marsdog_sim2d.arcade_viewer_node import (
     _activate_abnormal_simulation,
     _deactivate_abnormal_simulation,
 )
-from marsdog_sim2d.sim_state import SimEvent, SimState
-from marsdog_sim2d.virtual_executor import LocalVirtualRunner
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.simevent.external_damage_simulation import (
+    build_external_damage_payload,
+)
+from marsdog_sim2d.simevent.sim_state import SimState
+from bridge.virtual_executor import LocalVirtualRunner
 
 
 class AbnormalSimulationTests(unittest.TestCase):
+    def test_external_damage_uses_same_pause_lock_with_own_context(self) -> None:
+        state = SimState(
+            active_behavior="exploreRoom",
+            action_status="running",
+            action_goal_id="goal-explore",
+        )
+        damage = build_external_damage_payload(
+            "EVT_DAMAGE_LIGHT_IMPACT",
+            60,
+            confirmed=False,
+        )
+
+        _activate_abnormal_simulation(state, damage=damage)
+
+        self.assertTrue(state.ui_abnormal_simulation_active)
+        self.assertEqual(damage, state.ui_external_damage)
+        self.assertEqual("Flinch, Retreat & Inspect", state.active_behavior)
+        self.assertEqual("ACT_BODY_FLINCH", state.action_current_action)
+        self.assertEqual("损伤 L3", state.action_level)
+        self.assertEqual({}, state.ui_abnormal_emotion_delta)
+
+        _deactivate_abnormal_simulation(state)
+
+        self.assertIsNone(state.ui_external_damage)
+        self.assertEqual("exploreRoom", state.active_behavior)
+
     def test_window_toggle_pauses_and_resumes_local_plan(self) -> None:
         class FakeRunner:
             def __init__(self) -> None:
@@ -60,7 +90,7 @@ class AbnormalSimulationTests(unittest.TestCase):
             harness.sim_state.active_behavior,
         )
 
-    def test_activation_stops_motion_and_locks_whine_action(self) -> None:
+    def test_activation_stops_motion_and_starts_selected_level(self) -> None:
         state = SimState(
             dog_x=310.0,
             dog_y=420.0,
@@ -82,8 +112,14 @@ class AbnormalSimulationTests(unittest.TestCase):
         self.assertTrue(state.ui_abnormal_simulation_active)
         self.assertEqual("goal-food", state.ui_abnormal_interrupted_goal_id)
         self.assertEqual("abnormalSimulation", state.active_behavior)
-        self.assertEqual("ACT_VOCAL_WHINE", state.action_current_action)
-        self.assertEqual("ACT_VOCAL_WHINE", state.action_visual_action)
+        self.assertEqual("ACT_EMERGENCY_STOP", state.action_current_action)
+        self.assertEqual("ACT_EMERGENCY_STOP", state.action_visual_action)
+        self.assertEqual(1, state.action_stage_index)
+        self.assertEqual(4, state.action_stage_total)
+        self.assertEqual(
+            {"Fear": 40, "Anxiety": 30, "Excite": -30, "Joy": -40},
+            state.ui_abnormal_emotion_delta,
+        )
         self.assertEqual(0.0, state.dog_motion_duration)
         self.assertEqual((310.0, 420.0), (state.dog_motion_target_x, state.dog_motion_target_y))
         self.assertFalse(state.ui_follow_user_active)
@@ -103,6 +139,7 @@ class AbnormalSimulationTests(unittest.TestCase):
         )
         self.assertTrue(state.ui_follow_user_active)
         self.assertEqual("goal-food", state.ui_follow_goal_id)
+        self.assertEqual({}, state.ui_abnormal_emotion_delta)
 
     def test_action_feedback_cannot_override_active_abnormal_mode(self) -> None:
         state = SimState(
@@ -129,7 +166,7 @@ class AbnormalSimulationTests(unittest.TestCase):
         )
 
         self.assertEqual("abnormalSimulation", state.active_behavior)
-        self.assertEqual("ACT_VOCAL_WHINE", state.action_visual_action)
+        self.assertEqual("ACT_EMERGENCY_STOP", state.action_visual_action)
         self.assertNotEqual((900.0, 700.0), (state.dog_x, state.dog_y))
         self.assertEqual(1, len(state.ui_abnormal_deferred_events))
 

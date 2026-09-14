@@ -3,35 +3,39 @@
 from __future__ import annotations
 
 import json
+import logging
+import threading
+import typing as T
 from queue import Empty, Queue
 from typing import Any
 
+import rclpy
 from rclpy.node import Node
-from rclpy.qos import (
-    QoSDurabilityPolicy,
-    QoSHistoryPolicy,
-    QoSProfile,
-    QoSReliabilityPolicy,
-)
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from rclpy.executors import MultiThreadedExecutor
+
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
-from . import config
-from .event_injector import InjectionCommand, MANUAL_INJECTION_TOPIC
-from .feeding_interface import FeedingCoordinator
-from .parsers import PARSER_BY_TOPIC
-from .sim_state import SimEvent
-from .virtual_executor import VirtualActionServer
+from marsdog_sim2d import config
+from marsdog_sim2d.simevent.event_injector import (
+    InjectionCommand,
+    MANUAL_INJECTION_TOPIC,
+)
+from marsdog_sim2d.bridge.feeding_interface import FeedingCoordinator
+from marsdog_sim2d.simevent.parsers import PARSER_BY_TOPIC
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.bridge.virtual_executor import VirtualActionServer
 
 
 class RosBridge(Node):
     """Subscribe to documented MarsDog topics and enqueue normalized events."""
 
     def __init__(
-        self,
-        event_queue: Queue[SimEvent],
-        injection_queue: Queue[InjectionCommand] | None = None,
-        feeding_coordinator: FeedingCoordinator | None = None,
+            self,
+            event_queue: Queue[SimEvent],
+            injection_queue: Queue[InjectionCommand] | None = None,
+            feeding_coordinator: FeedingCoordinator | None = None,
     ) -> None:
         super().__init__("marsdog_sim2d_bridge")
         self._event_queue = event_queue
@@ -40,9 +44,7 @@ class RosBridge(Node):
         self._injection_publishers: dict[str, Any] = {}
         self._virtual_action_server: VirtualActionServer | None = None
         self._last_external_graph_signature: tuple[tuple[str, int], ...] | None = None
-        self._feeding_coordinator = (
-            feeding_coordinator or FeedingCoordinator()
-        )
+        self._feeding_coordinator = feeding_coordinator or FeedingCoordinator()
         self._create_subscriptions()
         self._create_injection_publishers()
         self._feeding_state_publisher = self.create_publisher(
@@ -153,11 +155,7 @@ class RosBridge(Node):
         message.data = self._feeding_coordinator.state_json()
         self._feeding_state_publisher.publish(message)
 
-    def _handle_try_start_eating(
-        self,
-        request: Trigger.Request,
-        response: Trigger.Response,
-    ) -> Trigger.Response:
+    def _handle_try_start_eating(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         del request
         decision = self._feeding_coordinator.try_start_eating()
         response.success = decision.accepted
@@ -173,14 +171,9 @@ class RosBridge(Node):
                     "feeding service authorized eating",
                 )
             )
-            self.get_logger().info(
-                "Eating authorized for goal "
-                f"{decision.state.get('activeGoalId') or '-'}"
-            )
+            self.get_logger().info(f"Eating authorized for goal {decision.state.get('activeGoalId') or '-'}")
         else:
-            self.get_logger().info(
-                f"Eating request rejected: {decision.reason}"
-            )
+            self.get_logger().info(f"Eating request rejected: {decision.reason}")
         return response
 
     def _make_callback(self, topic: str, parser: Any) -> Any:
@@ -188,16 +181,11 @@ class RosBridge(Node):
             try:
                 decoded = json.loads(msg.data)
             except json.JSONDecodeError as exc:
-                self.get_logger().warning(
-                    f"Ignoring invalid JSON on {topic}: {exc.msg}"
-                )
+                self.get_logger().warning(f"Ignoring invalid JSON on {topic}: {exc.msg}")
                 return
 
             if not isinstance(decoded, dict):
-                self.get_logger().warning(
-                    f"Ignoring JSON on {topic}: expected object, got "
-                    f"{type(decoded).__name__}"
-                )
+                self.get_logger().warning(f"Ignoring JSON on {topic}: expected object, got {type(decoded).__name__}")
                 return
 
             try:
@@ -207,15 +195,10 @@ class RosBridge(Node):
                 return
 
             if event.kind == "behavior_result_event":
-                self.get_logger().info(
-                    "/behavior/result_event format identified as "
-                    f"{event.format_hint or 'unknown'}"
-                )
+                self.get_logger().info(f"/behavior/result_event format identified as {event.format_hint or 'unknown'}")
                 if event.format_hint == "unknown":
                     self.get_logger().warning(
-                        "Unknown /behavior/result_event field format; showing raw "
-                        "fallback summary"
-                    )
+                        "Unknown /behavior/result_event field format; showing raw fallback summary")
             else:
                 self.get_logger().debug(f"Received {event.kind} from {topic}")
 
@@ -242,11 +225,11 @@ class RosBridge(Node):
             if topic == config.TOPICS["visual_event"]
             else config.STATE_TOPIC_DEPTH
             if topic
-            in {
-                config.TOPICS["simulation_time_state"],
-                config.TOPICS["internal_need_state"],
-                config.TOPICS["emotion_state"],
-            }
+               in {
+                   config.TOPICS["simulation_time_state"],
+                   config.TOPICS["internal_need_state"],
+                   config.TOPICS["emotion_state"],
+               }
             else config.EVENT_TOPIC_DEPTH
         )
         return QoSProfile(
@@ -294,30 +277,24 @@ class RosBridge(Node):
         for topic in monitored_topics:
             external: list[dict[str, str]] = []
             for endpoint in self.get_publishers_info_by_topic(topic):
-                if (
-                    endpoint.node_name == own_name
-                    and endpoint.node_namespace == own_namespace
-                ):
+                if endpoint.node_name == own_name and endpoint.node_namespace == own_namespace:
                     continue
+
                 qos = endpoint.qos_profile
-                external.append(
-                    {
-                        "node_name": endpoint.node_name,
-                        "node_namespace": endpoint.node_namespace,
-                        "topic_type": endpoint.topic_type,
-                        "reliability": str(qos.reliability),
-                        "durability": str(qos.durability),
-                    }
-                )
+                external.append({
+                    "node_name": endpoint.node_name,
+                    "node_namespace": endpoint.node_namespace,
+                    "topic_type": endpoint.topic_type,
+                    "reliability": str(qos.reliability),
+                    "durability": str(qos.durability),
+                })
             publishers[topic] = external
 
-        counts = {
-            topic: len(endpoints)
-            for topic, endpoints in publishers.items()
-        }
+        counts = {topic: len(endpoints) for topic, endpoints in publishers.items()}
         signature = tuple(sorted(counts.items()))
         if signature == self._last_external_graph_signature:
             return
+
         self._last_external_graph_signature = signature
         executor_online = any(
             counts.get(topic, 0) > 0
@@ -392,3 +369,41 @@ class RosBridge(Node):
             self._virtual_action_server.destroy()
             self._virtual_action_server = None
         return super().destroy_node()
+
+
+class RosBridgeThreadExecutor(threading.Thread):
+    def __init__(self, event_queue, injection_queue, feeding_coordinator, *runtime_parameter):
+        super().__init__(daemon=True, name="marsdog_sim2d_ros_spin")
+        rclpy.init(args=list(runtime_parameter))
+        self.event_queue = event_queue
+        self.injection_queue = injection_queue
+        self.feeding_coordinator = feeding_coordinator
+        self._ros_bridge: T.Optional[RosBridge] = None
+        self.logger = logging.getLogger("marsdog_sim2d")
+
+    def run(self):
+        self._ros_bridge = RosBridge(
+            self.event_queue,
+            self.injection_queue,
+            self.feeding_coordinator,
+        )
+
+        executor = MultiThreadedExecutor(num_threads=4)
+        try:
+            executor.add_node(self._ros_bridge)
+            executor.spin()
+        except Exception as exc:  # pragma: no cover - depends on ROS2 runtime shutdown
+            if rclpy.ok():
+                self.logger.exception("ROS2 spin failed: %s", exc)
+        finally:
+            executor.shutdown()
+
+    def shutdown(self):
+        if rclpy.ok():
+            rclpy.shutdown()
+
+        self.join(timeout=2.0)
+        if self._ros_bridge is not None:
+            self._ros_bridge.destroy_node()
+
+        self.logger.info("ROS2 shutdown complete")

@@ -23,16 +23,16 @@ from rclpy.qos import (
 )
 from std_msgs.msg import String
 
-from . import config
-from .action_visuals import visual_for_action
-from .behavior_contract import (
+from marsdog_sim2d import config
+from marsdog_sim2d.behavior.action_visuals import visual_for_action
+from marsdog_sim2d.behavior.behavior_contract import (
     SelectedStage,
     direct_behavior_names,
     load_behavior_contract,
     select_behavior_stages,
 )
-from .sim_state import SimEvent
-from .voice_commands import OWNER_SIDE_COMMAND_BEHAVIORS
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.behavior.voice_commands import OWNER_SIDE_COMMAND_BEHAVIORS
 
 try:  # The real action type is available only when the MarsDog ROS2 workspace is sourced.
     from marsdog_interfaces.action import ExecuteBehavior
@@ -147,13 +147,21 @@ class VirtualRoom:
     def build_plan(self, goal: dict[str, Any]) -> BehaviorPlan:
         behavior_name = goal["behavior_name"]
         params = goal.get("params") if isinstance(goal.get("params"), dict) else {}
-        selected_stages = select_behavior_stages(behavior_name)
-        if selected_stages:
-            return self._build_contract_plan(
-                goal,
-                params,
-                selected_stages,
+        stage_preferences: dict[str, str] | None = None
+        if behavior_name == "barkShortAlert":
+            prepare_action = (
+                "ACT_SNIFF_AND_CIRCLE_AT_TOILET_SPOT"
+                if params.get("toilet_spot_taught") is True
+                else "ACT_SNIFF_AND_CIRCLE"
             )
+            stage_preferences = {"prepare": prepare_action}
+        selected_stages = select_behavior_stages(
+            behavior_name,
+            stage_preferences=stage_preferences,
+        )
+        if selected_stages:
+            return self._build_contract_plan(goal, params, selected_stages)
+
         # The new executor accepts only the 53 case-sensitive direct behavior
         # names in the packaged contract.  Keep an invalid external Goal
         # visible as text, but never revive the former alias/guessing rules.
@@ -170,12 +178,7 @@ class VirtualRoom:
             duration=_duration(goal.get("timeout_sec"), 1.0),
         )
 
-    def _build_contract_plan(
-        self,
-        goal: dict[str, Any],
-        params: dict[str, Any],
-        selected_stages: tuple[SelectedStage, ...],
-    ) -> BehaviorPlan:
+    def _build_contract_plan(self, goal: dict[str, Any], params: dict[str, Any], selected_stages: tuple[SelectedStage, ...]) -> BehaviorPlan:
         """Build a local plan directly from the packaged 53-behavior contract."""
 
         behavior_name = str(goal["behavior_name"])
@@ -193,10 +196,7 @@ class VirtualRoom:
             )
             active_object = str(target)
         elif target == "owner":
-            if (
-                behavior_name in OWNER_SIDE_COMMAND_BEHAVIORS
-                and self.owner_is_near()
-            ):
+            if behavior_name in OWNER_SIDE_COMMAND_BEHAVIORS and self.owner_is_near():
                 target_x = self.dog_x
                 target_y = self.dog_y
                 target_heading = self.dog_heading
@@ -229,7 +229,10 @@ class VirtualRoom:
             active_object = "toy"
             object_target = (self.user_x - 28.0, self.user_y - 26.0)
 
-        default_duration = max(2.0, len(selected_stages) * 1.8)
+        default_duration = max(
+            2.0,
+            sum(stage.duration_sec or 1.8 for stage in selected_stages),
+        )
         return BehaviorPlan(
             behavior_name=behavior_name,
             goal_id=str(goal.get("goal_id") or ""),
@@ -247,42 +250,40 @@ class VirtualRoom:
         )
 
     def owner_is_near(self) -> bool:
-        return (
-            math.hypot(
-                self.user_x - self.dog_x,
-                self.user_y - self.dog_y,
-            )
-            <= config.OWNER_NEAR_DISTANCE
-        )
+        return math.hypot(self.user_x - self.dog_x, self.user_y - self.dog_y) <= config.OWNER_NEAR_DISTANCE
+
 
     def frame(self, plan: BehaviorPlan, progress: float) -> dict[str, Any]:
         if plan.selected_stages:
             return self._contract_frame(plan, progress)
         return self._base_frame(plan, progress)
 
-    def _contract_frame(
-        self,
-        plan: BehaviorPlan,
-        progress: float,
-    ) -> dict[str, Any]:
+    def _contract_frame(self, plan: BehaviorPlan, progress: float) -> dict[str, Any]:
         progress = _clamp(progress, 0.0, 1.0)
         stages = plan.selected_stages
         stage_total = len(stages)
+        stage_durations = _stage_duration_weights(stages)
+        total_duration = sum(stage_durations)
+        elapsed = progress * total_duration
+        stage_offset = stage_total - 1
+        stage_start_sec = 0.0
+        for index, stage_duration in enumerate(stage_durations):
+            stage_end_sec = stage_start_sec + stage_duration
+            if elapsed <= stage_end_sec:
+                stage_offset = index
+                break
+            stage_start_sec = stage_end_sec
+
         # A feedback packet is emitted after a Stage completes.  At an exact
-        # boundary such as 1/4, the completed Stage is still Stage 1 rather
+        # boundary, the completed Stage is still the current Stage rather
         # than the next Stage that has not executed yet.
-        stage_offset = min(
-            stage_total - 1,
-            max(0, math.ceil(progress * stage_total) - 1),
-        )
         stage = stages[stage_offset]
-        stage_start = stage_offset / stage_total
-        stage_end = (stage_offset + 1) / stage_total
+        stage_duration = stage_durations[stage_offset]
         stage_progress = (
             1.0
             if progress >= 1.0
             else _clamp(
-                (progress - stage_start) / max(0.001, stage_end - stage_start),
+                (elapsed - stage_start_sec) / stage_duration,
                 0.0,
                 1.0,
             )
@@ -741,6 +742,10 @@ class VirtualRoom:
                     target_x,
                     target_y,
                 )
+            elif target == "current":
+                target_x = self.dog_x
+                target_y = self.dog_y
+                heading = self.dog_heading
             elif target == "circle_here":
                 target_x = self.dog_x
                 target_y = self.dog_y
@@ -1228,8 +1233,13 @@ class VirtualActionServer:
 
         last_frame: dict[str, Any] | None = None
         stage_total = max(1, len(plan.selected_stages))
-        stage_duration = max(0.1, plan.duration / stage_total)
-        for stage_index in range(1, stage_total + 1):
+        stage_weights = _stage_duration_weights(plan.selected_stages)
+        total_weight = sum(stage_weights)
+        for stage_index, stage_weight in enumerate(stage_weights, start=1):
+            stage_duration = max(
+                0.1,
+                plan.duration * stage_weight / total_weight,
+            )
             stage_deadline = time.monotonic() + stage_duration
             while time.monotonic() < stage_deadline:
                 if goal_handle.is_cancel_requested:
@@ -1376,13 +1386,16 @@ class LocalVirtualRunner:
         behavior_name: str,
         timeout_sec: float = 3.0,
         *,
+        params: dict[str, Any] | None = None,
         preferred_action: str | None = None,
         random_preview_target: bool = False,
     ) -> SimEvent:
+        goal_params = dict(params or {})
         self.plan = self.room.build_plan(
             {
                 "goal_id": f"local-{uuid.uuid4().hex}",
                 "behavior_name": behavior_name,
+                "params": goal_params,
                 "timeout_sec": timeout_sec,
             }
         )
@@ -1414,6 +1427,7 @@ class LocalVirtualRunner:
             {
                 "goal_id": self.plan.goal_id,
                 "behavior_name": self.plan.behavior_name,
+                "params": goal_params,
                 "status": "PENDING",
                 "progress": 0.0,
             },
@@ -1439,6 +1453,7 @@ class LocalVirtualRunner:
                 stage_id=stage.stage_id,
                 order=stage.order,
                 action_id=action_id,
+                duration_sec=selected[stage_index].duration_sec,
             )
             self.plan.selected_stages = tuple(selected)
             if stage_index == 0:
@@ -2033,6 +2048,17 @@ def _duration(value: Any, default: float) -> float:
     if timeout <= 0.0:
         return default
     return min(max(timeout * 0.65, 0.8), 6.0)
+
+
+def _stage_duration_weights(
+    stages: tuple[SelectedStage, ...],
+) -> tuple[float, ...]:
+    """Keep configured stage timing ratios when a Goal scales total time."""
+
+    return tuple(
+        max(stage.duration_sec or 1.0, 0.1)
+        for stage in stages
+    ) or (1.0,)
 
 
 def _normalized_progress(value: Any) -> float:

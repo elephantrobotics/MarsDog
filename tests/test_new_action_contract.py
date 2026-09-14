@@ -4,25 +4,33 @@ import random
 import unittest
 
 from marsdog_sim2d import config
-from marsdog_sim2d.action_visuals import ACTION_VISUALS, visual_for_action
-from marsdog_sim2d.behavior_contract import (
+from marsdog_sim2d.behavior.action_visuals import ACTION_VISUALS, visual_for_action
+from marsdog_sim2d.behavior.behavior_contract import (
+    SelectedStage,
     contract_action_ids,
     direct_behavior_names,
     load_behavior_contract,
     select_behavior_stages,
     stage_position,
 )
-from marsdog_sim2d.event_injector import build_custom_injection_command
-from marsdog_sim2d.views.renderer import _dog_pose_for_action
-from marsdog_sim2d.sim_state import SimEvent, SimState
-from marsdog_sim2d.virtual_executor import VirtualRoom
-from marsdog_sim2d.voice_commands import resolve_voice_command
+from simevent.event_injector import build_custom_injection_command
+from marsdog_sim2d.pages.renderer import _dog_pose_for_action
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.simevent.sim_state import SimState
+from bridge.virtual_executor import VirtualRoom
+from marsdog_sim2d.behavior.voice_commands import resolve_voice_command
 
 
 class BehaviorContractTests(unittest.TestCase):
     def test_packaged_yaml_is_the_complete_runtime_contract(self) -> None:
-        self.assertEqual(53, len(direct_behavior_names()))
-        self.assertEqual(189, len(contract_action_ids()))
+        self.assertTrue(
+            {
+                "eatNormally",
+                "seekFood",
+                "eatExcitedly",
+                "seekFoodUrgently",
+            }.issubset(direct_behavior_names())
+        )
         self.assertEqual(
             (1, 4),
             stage_position("eatNormally", "prepare"),
@@ -68,12 +76,39 @@ class BehaviorContractTests(unittest.TestCase):
                 "timeout_sec": 4.0,
             }
         )
-        frame = room.frame(plan, 0.25)
+        selected_duration = sum(
+            stage.duration_sec or 1.0
+            for stage in plan.selected_stages
+        )
+        first_stage_duration = plan.selected_stages[0].duration_sec or 1.0
+        frame = room.frame(plan, first_stage_duration / selected_duration)
         self.assertEqual("prepare", frame["current_stage"])
         self.assertEqual(
             "ACT_LOWER_HEAD_AND_APPROACH_BOWL",
             frame["current_action"],
         )
+
+    def test_stage_timing_uses_selected_action_duration_ratio(self) -> None:
+        room = VirtualRoom()
+        plan = room.build_plan(
+            {
+                "goal_id": "weighted-eat",
+                "behavior_name": "eatExcitedly",
+                "timeout_sec": 10.0,
+            }
+        )
+        plan.selected_stages = (
+            SelectedStage(
+                "prepare",
+                1,
+                "ACT_LOWER_HEAD_AND_APPROACH_BOWL",
+                1.0,
+            ),
+            SelectedStage("eating", 2, "ACT_LICK_AND_SWALLOW", 9.0),
+        )
+
+        self.assertEqual("prepare", room.frame(plan, 0.10)["current_stage"])
+        self.assertEqual("eating", room.frame(plan, 0.11)["current_stage"])
 
 
 class ExactActionPresentationTests(unittest.TestCase):

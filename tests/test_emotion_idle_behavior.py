@@ -17,16 +17,16 @@ from marsdog_sim2d.arcade_viewer_node import (
     _random_calm_idle_delay,
     _recover_manual_need_state,
 )
-from marsdog_sim2d.action_visuals import visual_for_action
-from marsdog_sim2d.event_injector import build_custom_injection_command
-from marsdog_sim2d.parsers import (
+from marsdog_sim2d.behavior.action_visuals import visual_for_action
+from marsdog_sim2d.simevent.event_injector import build_custom_injection_command
+from marsdog_sim2d.simevent.parsers import (
     parse_internal_need_signal_event,
     parse_internal_need_state,
 )
-from marsdog_sim2d.behavior_contract import direct_behavior_names
-from marsdog_sim2d.sim_state import SimState
-from marsdog_sim2d.sim_state import SimEvent
-from marsdog_sim2d.virtual_executor import LocalVirtualRunner, VirtualRoom
+from marsdog_sim2d.behavior.behavior_contract import direct_behavior_names
+from marsdog_sim2d.simevent.sim_state import SimState
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.bridge.virtual_executor import LocalVirtualRunner, VirtualRoom
 
 
 class EmotionIdleBehaviorTests(unittest.TestCase):
@@ -312,6 +312,126 @@ class EmotionIdleBehaviorTests(unittest.TestCase):
             set(MANUAL_NEED_BEHAVIORS),
             set(MANUAL_NEED_RECOVERY),
         )
+
+    def test_manual_bladder_fallback_uses_the_form_teaching_choice(self) -> None:
+        cases = (
+            ("false", "ACT_SNIFF_AND_CIRCLE"),
+            ("true", "ACT_SNIFF_AND_CIRCLE_AT_TOILET_SPOT"),
+        )
+        for taught_value, expected_action in cases:
+            with self.subTest(taught=taught_value):
+                harness = self._window_harness()
+                harness.sim_state.injection_form.fields[
+                    "toilet_spot_taught"
+                ] = taught_value
+                harness._pending_manual_need = (
+                    "barkShortAlert",
+                    5.0,
+                    time.time() - 1.0,
+                    "BLADDER",
+                )
+
+                SimWindow._maybe_start_manual_need(harness)
+
+                self.assertIsNotNone(harness.local_runner.plan)
+                self.assertEqual(
+                    expected_action,
+                    harness.local_runner.plan.current_action,
+                )
+
+    def test_manual_sleepiness_selects_shallow_or_deep_sleep(self) -> None:
+        cases = ((76, "sleepOnSide"), (91, "sleepNow"))
+        for value, expected_behavior in cases:
+            with self.subTest(value=value):
+                harness = self._window_harness()
+                command = build_custom_injection_command(
+                    "Need",
+                    {
+                        "need_demand": "Sleepiness",
+                        "need_value": str(value),
+                    },
+                )
+                state_event = parse_internal_need_state(
+                    command.messages[0].payload
+                )
+                signal_event = parse_internal_need_signal_event(
+                    command.messages[1].payload
+                )
+                signal_event.received_at = time.time() - 1.0
+                harness.sim_state.apply_event(state_event)
+                harness.sim_state.apply_event(signal_event)
+
+                SimWindow._capture_latest_manual_need(harness)
+                SimWindow._maybe_start_manual_need(harness)
+
+                self.assertIsNotNone(harness.local_runner.plan)
+                self.assertEqual(
+                    expected_behavior,
+                    harness.local_runner.plan.behavior_name,
+                )
+
+                harness.local_runner.started_at = (
+                    time.monotonic()
+                    - harness.local_runner.plan.duration
+                    - 0.1
+                )
+                for event in harness.local_runner.update(harness.sim_state):
+                    harness.sim_state.apply_event(event)
+                SimWindow._advance_manual_need_completion(harness)
+
+                self.assertEqual(
+                    "NORMAL",
+                    harness.sim_state.internal_need_state["demands"][
+                        "Sleepiness"
+                    ]["level"],
+                )
+
+    def test_manual_energy_selects_rest_or_recharge_and_recovers(self) -> None:
+        cases = ((19, "restInPlace"), (9, "recharge"))
+        for value, expected_behavior in cases:
+            with self.subTest(value=value):
+                harness = self._window_harness()
+                command = build_custom_injection_command(
+                    "Need",
+                    {
+                        "need_demand": "Energy",
+                        "need_value": str(value),
+                    },
+                )
+                state_event = parse_internal_need_state(
+                    command.messages[0].payload
+                )
+                signal_event = parse_internal_need_signal_event(
+                    command.messages[1].payload
+                )
+                signal_event.received_at = time.time() - 1.0
+                harness.sim_state.apply_event(state_event)
+                harness.sim_state.apply_event(signal_event)
+
+                SimWindow._capture_latest_manual_need(harness)
+                SimWindow._maybe_start_manual_need(harness)
+
+                self.assertIsNotNone(harness.local_runner.plan)
+                self.assertEqual(
+                    expected_behavior,
+                    harness.local_runner.plan.behavior_name,
+                )
+
+                harness.local_runner.started_at = (
+                    time.monotonic()
+                    - harness.local_runner.plan.duration
+                    - 0.1
+                )
+                for event in harness.local_runner.update(harness.sim_state):
+                    harness.sim_state.apply_event(event)
+                SimWindow._advance_manual_need_completion(harness)
+
+                self.assertEqual(
+                    "NORMAL",
+                    harness.sim_state.internal_need_state["demands"][
+                        "Energy"
+                    ]["level"],
+                )
 
     def test_manual_need_recovery_covers_all_seven_demands(self) -> None:
         for demand_key, (demand_name, recovery_value) in (

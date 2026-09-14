@@ -1,6 +1,6 @@
 import unittest
 
-from marsdog_sim2d.event_injector import (
+from simevent.event_injector import (
     InjectionCommand,
     InjectionMessage,
     command_from_payload_preview,

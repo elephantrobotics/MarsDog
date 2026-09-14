@@ -2,10 +2,10 @@ import unittest
 from unittest.mock import Mock, patch
 
 from marsdog_sim2d import config
-from marsdog_sim2d.views import widgets as widgets_module
-from marsdog_sim2d.components import ATopicChip, drawing
-from marsdog_sim2d.sim_state import SimState
-from marsdog_sim2d.views.widgets import StatusWidgets
+from marsdog_sim2d.pages import widgets as widgets_module
+from marsdog_sim2d.components import ATopicChip, text
+from simevent.sim_state import SimState
+from marsdog_sim2d.pages.widgets import StatusWidgets
 
 
 class TextCacheTests(unittest.TestCase):
@@ -14,11 +14,11 @@ class TextCacheTests(unittest.TestCase):
         window.ctx = object()
 
         with (
-            patch.object(drawing.arcade, "get_window", return_value=window),
-            patch.object(drawing.arcade, "Text") as text_type,
+            patch.object(text.arcade, "get_window", return_value=window),
+            patch.object(text.arcade, "Text") as text_type,
         ):
-            drawing.draw_text("cached label", 10, 20, (1, 2, 3), 12)
-            drawing.draw_text("cached label", 10, 20, (1, 2, 3), 12)
+            text.draw_text("cached label", 10, 20, (1, 2, 3), 12)
+            text.draw_text("cached label", 10, 20, (1, 2, 3), 12)
 
         text_type.assert_called_once()
         self.assertEqual(text_type.return_value.draw.call_count, 2)
@@ -29,14 +29,14 @@ class TextCacheTests(unittest.TestCase):
         text_object = Mock(content_size=(84, 27))
 
         with (
-            patch.object(drawing.arcade, "get_window", return_value=window),
+            patch.object(text.arcade, "get_window", return_value=window),
             patch.object(
-                drawing,
+                text,
                 "_create_text",
                 return_value=text_object,
             ),
         ):
-            size = drawing.measure_text(
+            size = text.measure_text(
                 "中英文 mixed",
                 font_size=10,
                 width=120,
@@ -99,6 +99,7 @@ class SceneControlLayoutTests(unittest.TestCase):
         self.assertEqual("bowl", food_call.kwargs["icon"])
 
         expected_icons = {
+            "cycle_abnormal_level": "warning",
             "toggle_abnormal_simulation": "warning",
             "toggle_virtual_user": "user",
             "toggle_fov": "eye",
@@ -111,7 +112,7 @@ class SceneControlLayoutTests(unittest.TestCase):
 
         self.assertTrue(all(not call.kwargs["icon_only"] for call in calls))
         self.assertEqual(
-            ["放置声源", "放粮", "异常模拟", "添加人物", "视野开"],
+            ["放置声源", "放粮", "等级 L0", "异常模拟", "添加人物", "视野开"],
             [call.args[4] for call in calls],
         )
 

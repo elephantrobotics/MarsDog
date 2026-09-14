@@ -13,9 +13,10 @@ import arcade
 from arcade.texture_atlas import DefaultTextureAtlas
 
 from marsdog_sim2d import config
-from marsdog_sim2d.action_visuals import is_text_only_action, visual_for_action
-from marsdog_sim2d.components.drawing import draw_text, measure_text
-from marsdog_sim2d.sim_state import SimState
+from marsdog_sim2d.behavior.action_visuals import is_text_only_action, visual_for_action
+from marsdog_sim2d.components.text import draw_text
+from marsdog_sim2d.simevent.injection import InjectionFormState
+from marsdog_sim2d.simevent.sim_state import SimState
 
 _VIRTUAL_USER_WIDTH = 64.0
 _VIRTUAL_USER_HEIGHT = 154.0
@@ -27,7 +28,6 @@ class WorldRenderer:
 
     def __init__(self) -> None:
         asset_root = Path(__file__).parent.with_name("assets")
-        print(f"{asset_root = }")
         dog_asset_dir = asset_root / "dog"
         self._dog_textures: dict[str, Any] = {}
         self._dog_texture_atlases: dict[str, Any] = {}
@@ -107,13 +107,11 @@ class WorldRenderer:
         except (FileNotFoundError, OSError, RuntimeError):
             self._food_bowl_with_food_texture = None
         try:
-            self._toilet_pad_texture = arcade.load_texture(
-                asset_root / "objects" / "marsdog_toilet_pad.png"
-            )
+            self._toilet_pad_texture = arcade.load_texture(asset_root / "objects" / "marsdog_toilet_pad.png")
         except (FileNotFoundError, OSError, RuntimeError):
             self._toilet_pad_texture = None
 
-    def draw(self, state: SimState) -> None:
+    def draw(self, state: SimState, form: InjectionFormState) -> None:
         now = time.time()
         view_state = self._screen_state(state)
         if state.ui_food_waiting and not state.virtual_motion_active():
@@ -140,7 +138,7 @@ class WorldRenderer:
             self._draw_user_or_target(view_state)
             self._draw_audio_direction(view_state)
             self._draw_visual_markers(view_state)
-            self._draw_pending_placement(state)
+            self._draw_pending_placement(state, form)
             self._draw_action_effects(view_state, now)
             self._draw_interaction_links(view_state, now)
             self._draw_dog(view_state, now)
@@ -566,7 +564,11 @@ class WorldRenderer:
             1,
         )
 
-    def _draw_pending_placement(self, state: SimState) -> None:
+    def _draw_pending_placement(
+        self,
+        state: SimState,
+        form: InjectionFormState,
+    ) -> None:
         pending = state.ui_pending_placement
         if not pending or pending.get("x") is None or pending.get("y") is None:
             return
@@ -582,9 +584,9 @@ class WorldRenderer:
             arcade.draw_line(dog_x, dog_y, x, y, (*color, 150), 2)
         kind = str(pending.get("kind") or "target")
         identity = (
-            state.event_injector_fields.get("vision_object")
+            form.fields.get("vision_object")
             if kind == "object"
-            else state.event_injector_fields.get("vision_identity")
+            else form.fields.get("vision_identity")
         ) or kind
         confidence = pending.get("confidence")
         _draw_tag(
@@ -829,10 +831,8 @@ class WorldRenderer:
         # Pose selection must follow the current ACT instead of the whole
         # behavior name.  Otherwise a behavior such as ``sleepNow`` selects
         # the lying texture even while its current ACT is still walking.
-        pose_action = (
-            "ACT_VOCAL_WHINE"
-            if state.ui_abnormal_simulation_active
-            else str(state.action_visual_action or state.action_current_action or "")
+        pose_action = str(
+            state.action_visual_action or state.action_current_action or ""
         )
         if not pose_action or pose_action == "-":
             # A Goal does not identify its selected ACT.  Until its first
@@ -1582,6 +1582,9 @@ class WorldRenderer:
         if state.processed_events == 0:
             status = "等待 ROS2 Topic 消息"
             color = config.COLORS["muted_text"]
+        elif state.latest_tactile_event and recent_topics == 0:
+            status = "本地触觉模拟运行中"
+            color = config.COLORS["tactile"]
         else:
             status = f"已接收 {recent_topics}/{endpoint_count} 个端点"
             color = config.COLORS["success"]

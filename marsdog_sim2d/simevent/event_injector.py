@@ -8,13 +8,159 @@ import json
 import time
 from typing import Any
 
-from . import config
+from marsdog_sim2d import config
+from marsdog_sim2d.simevent.external_damage_simulation import (
+    EXTERNAL_DAMAGE_SPECS,
+    build_external_damage_payload,
+)
+from marsdog_sim2d.simevent.events import SimEvent
 
 
 MANUAL_INJECTION_TOPIC = "manual_event_injector"
 MANUAL_SOURCE = "marsdog_sim2d"
-INJECTOR_GROUPS = ("Audio", "Need", "Emotion", "Vision", "Result", "Personality")
+LOCAL_TACTILE_TOPIC = "local://tactile"
+LOCAL_EXTERNAL_DAMAGE_TOPIC = "local://external-damage"
+INJECTOR_GROUPS = (
+    "Audio",
+    "Tactile",
+    "Damage",
+    "Need",
+    "Emotion",
+    "Vision",
+    "Result",
+    "Personality",
+)
 DEFAULT_INJECTOR_GROUP = "Audio"
+TACTILE_EVENT_SPECS: dict[str, dict[str, Any]] = {
+    "EVT_TACTILE_HEAD_PET": {
+        "label": "摸狗头",
+        "body_part": "head",
+        "emotion_delta": {"Joy": 25, "Calm": 15, "Excite": 5},
+        "reaction_candidates": ("blinkSoftly", "yawnSlowly"),
+        "local_behavior": "expressCalmAlone",
+        "preferred_action": "ACT_YAWN",
+    },
+    "EVT_TACTILE_NOSE_TOUCH": {
+        "label": "摸鼻子",
+        "body_part": "nose",
+        "emotion_delta": {"Curious": 10, "Calm": 5},
+        "reaction_candidates": ("sniffGround", "nuzzleGently"),
+        "local_behavior": "expressCuriosityAlone",
+        "preferred_action": "ACT_NON_INTERACT_EXPLORE",
+    },
+    "EVT_TACTILE_EAR_TOUCH": {
+        "label": "摸耳朵",
+        "body_part": "ear",
+        "emotion_delta": {"Joy": 20, "Calm": 10},
+        "reaction_candidates": ("tiltHead", "wagTailGently"),
+        "local_behavior": "expressJoyAlone",
+        "preferred_action": "ACT_WAG_TAIL",
+    },
+    "EVT_TACTILE_CHIN_RUB": {
+        "label": "摸下巴",
+        "body_part": "chin",
+        "emotion_delta": {"Joy": 30, "Calm": 10, "Excite": 5},
+        "reaction_candidates": ("exposeBelly", "lickPaws"),
+        "local_behavior": "expressJoyWithHuman",
+        "preferred_action": "ACT_SHOW_BELLY",
+    },
+    "EVT_TACTILE_FACE_TOUCH": {
+        "label": "摸脸",
+        "body_part": "face",
+        "emotion_delta": {"Joy": 15, "Anxiety": 10},
+        "reaction_candidates": ("turnHeadAway", "shakeOff"),
+        "local_behavior": "expressAnxietyAlone",
+        "preferred_action": "ACT_HIDE_SHRINK",
+    },
+    "EVT_TACTILE_MUZZLE_GRAB": {
+        "label": "抓嘴筒子",
+        "body_part": "muzzle",
+        "emotion_delta": {"Fear": 35, "Anxiety": 20, "Disgust": 15},
+        "reaction_candidates": ("tuckTail", "retreatWithTailTucked"),
+        "local_behavior": "expressFearAlone",
+        "preferred_action": "ACT_TUCK_TAIL",
+    },
+    "EVT_TACTILE_PUT_IN_MOUTH": {
+        "label": "放嘴里",
+        "body_part": "mouth",
+        "emotion_delta": {"Fear": 40, "Disgust": 25, "Anxiety": 15},
+        "reaction_candidates": ("freezeAlert", "growlLow"),
+        "local_behavior": "expressFearAlone",
+        "preferred_action": "ACT_FREEZE_SHAKE",
+    },
+    "EVT_TACTILE_BODY_STROKE": {
+        "label": "摸躯干",
+        "body_part": "body",
+        "emotion_delta": {"Joy": 20, "Calm": 15},
+        "reaction_candidates": ("stretchLazily", "restStill"),
+        "local_behavior": "expressCalmAlone",
+        "preferred_action": "ACT_STRETCH",
+    },
+    "EVT_TACTILE_BELLY_TRUST": {
+        "label": "摸肚子（信任状态）",
+        "body_part": "belly",
+        "emotion_delta": {"Joy": 35, "Calm": 15},
+        "reaction_candidates": ("rollOverShowBelly", "exposeBelly"),
+        "local_behavior": "expressJoyWithHuman",
+        "preferred_action": "ACT_SHOW_BELLY",
+    },
+    "EVT_TACTILE_BELLY_TENSE": {
+        "label": "摸肚子（紧张状态）",
+        "body_part": "belly",
+        "emotion_delta": {"Fear": 20, "Anxiety": 15},
+        "reaction_candidates": ("curlUp", "protectBelly"),
+        "local_behavior": "expressAnxietyAlone",
+        "preferred_action": "ACT_HIDE_SHRINK",
+    },
+    "EVT_TACTILE_PAW_HOLD": {
+        "label": "握住前爪",
+        "body_part": "front_paw",
+        "emotion_delta": {"Curious": 10, "Calm": 5},
+        "reaction_candidates": ("pawOnKnee", "stayStill"),
+        "local_behavior": "wait_in_place",
+        "preferred_action": "ACT_BASIC_WAIT",
+    },
+    "EVT_TACTILE_PAW_PAD_SLEEP": {
+        "label": "睡觉时摸爪肉垫（温柔）",
+        "body_part": "paw_pad",
+        "emotion_delta": {"Calm": 10},
+        "reaction_candidates": ("continueSleeping", "softBlink"),
+        "local_behavior": "sleepNow",
+        "preferred_action": "ACT_SLEEP_ON_SIDE",
+    },
+    "EVT_TACTILE_PAW_PAD_WAKE": {
+        "label": "睡觉时摸爪肉垫（粗暴）",
+        "body_part": "paw_pad",
+        "emotion_delta": {"Fear": 25, "Anxiety": 15},
+        "reaction_candidates": ("startleAwake", "retreatQuickly"),
+        "local_behavior": "expressFearAlone",
+        "preferred_action": "ACT_FREEZE_SHAKE",
+    },
+    "EVT_TACTILE_HIP_ACCEPT": {
+        "label": "摸屁股/大腿根（接受）",
+        "body_part": "hip",
+        "emotion_delta": {"Joy": 15},
+        "reaction_candidates": ("wagTailLow", "approachSlowly"),
+        "local_behavior": "expressJoyAlone",
+        "preferred_action": "ACT_WAG_TAIL",
+    },
+    "EVT_TACTILE_HIP_RESIST": {
+        "label": "摸屁股/大腿根（抗拒）",
+        "body_part": "hip",
+        "emotion_delta": {"Fear": 20, "Anxiety": 15},
+        "reaction_candidates": ("turnAway", "growlLow"),
+        "local_behavior": "expressFearAlone",
+        "preferred_action": "ACT_BARK_TENSE",
+    },
+    "EVT_TACTILE_TAIL_GRAB": {
+        "label": "抓尾巴",
+        "body_part": "tail",
+        "emotion_delta": {"Fear": 30, "Anxiety": 20, "Disgust": 10},
+        "reaction_candidates": ("tuckTail", "fleeQuickly"),
+        "local_behavior": "expressFearAlone",
+        "preferred_action": "ACT_TUCK_TAIL",
+    },
+}
 _VOICE_EVENT_BY_COMMAND_ID = {
     "CMD_SIT": "EVT_VOICE_COMMAND_SIT",
     "CMD_COME_HERE": "EVT_VOICE_COMMAND_COME",
@@ -42,6 +188,51 @@ SCENARIOS = (
     ("fear_response", "Fear Response", "Unknown human with high fear"),
     ("explore_toy", "Explore Toy", "Toy detection plus exploration need"),
 )
+
+
+def build_local_tactile_event(event_type: str) -> SimEvent:
+    """Build one UI-only tactile event without creating a ROS message."""
+
+    spec = TACTILE_EVENT_SPECS[event_type]
+    payload = {
+        "event_type": event_type,
+        "label": spec["label"],
+        "body_part": spec["body_part"],
+        "emotion_delta": dict(spec["emotion_delta"]),
+        "reaction_candidates": list(spec["reaction_candidates"]),
+        "local_behavior": spec["local_behavior"],
+        "preferred_action": spec["preferred_action"],
+        "source": "local_tactile_demo",
+    }
+    return SimEvent(
+        "tactile_event",
+        LOCAL_TACTILE_TOPIC,
+        payload,
+        f"tactile_event: {spec['label']} ({event_type})",
+    )
+
+
+def build_local_external_damage_event(
+    event_type: str,
+    risk_score: float,
+    *,
+    confirmed: bool,
+) -> SimEvent:
+    """Build one normalized UI-only external-damage event."""
+
+    payload = build_external_damage_payload(
+        event_type,
+        risk_score,
+        confirmed=confirmed,
+    )
+    payload["kind"] = "external_damage_event"
+    return SimEvent(
+        "external_damage_event",
+        LOCAL_EXTERNAL_DAMAGE_TOPIC,
+        payload,
+        f"external_damage: {payload['label']} ({payload['risk_level']})",
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class EventMessageSpec:
@@ -86,9 +277,7 @@ def command_from_payload_preview(
     try:
         preview = json.loads(preview_text)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"JSON 格式错误：第 {exc.lineno} 行，第 {exc.colno} 列"
-        ) from exc
+        raise ValueError(f"JSON 格式错误：第 {exc.lineno} 行，第 {exc.colno} 列") from exc
 
     if not isinstance(preview, list) or not preview:
         raise ValueError("Payload 必须是非空消息数组")
@@ -149,6 +338,10 @@ def build_custom_injection_command(
 
     if group == "Audio":
         label, messages = _build_custom_audio(fields)
+    elif group == "Tactile":
+        label, messages = _build_custom_tactile(fields)
+    elif group == "Damage":
+        label, messages = _build_custom_damage(fields)
     elif group == "Need":
         label, messages = _build_custom_need(fields)
     elif group == "Emotion":
@@ -320,6 +513,14 @@ CUSTOM_FIELD_SPECS: dict[str, tuple[InputFieldSpec, ...]] = {
         InputFieldSpec("audio_speaker_id", "Audio", "speaker", 24),
         InputFieldSpec("audio_confidence", "Audio", "conf", 8),
     ),
+    "Tactile": (
+        InputFieldSpec("tactile_event_type", "Tactile", "event", 40),
+    ),
+    "Damage": (
+        InputFieldSpec("damage_event_type", "Damage", "event", 48),
+        InputFieldSpec("damage_risk_score", "Damage", "risk", 8),
+        InputFieldSpec("damage_confirmed", "Damage", "confirmed", 8),
+    ),
     "Need": (
         InputFieldSpec("need_demand", "Need", "demand", 24),
         InputFieldSpec("need_value", "Need", "value", 8),
@@ -361,6 +562,10 @@ _DEFAULT_FIELD_VALUES = {
     "audio_wake_angle": "0",
     "audio_speaker_id": "owner",
     "audio_confidence": "0.95",
+    "tactile_event_type": "EVT_TACTILE_HEAD_PET",
+    "damage_event_type": "EVT_DAMAGE_LIGHT_IMPACT",
+    "damage_risk_score": "60",
+    "damage_confirmed": "unconfirmed",
     "need_demand": "Hunger",
     "need_value": "82",
     "emotion_name": "Joy",
@@ -434,21 +639,15 @@ def resolve_need_output(demand: str, value: float) -> tuple[str, str]:
     return level, f"NEED_{resolved_demand.upper()}_{suffix}"
 
 
-def resolve_emotion_output(
-    emotion: str,
-    value: float,
-) -> tuple[str, str | None, tuple[int, int] | None]:
+def resolve_emotion_output(emotion: str, value: float) -> tuple[str, str | None, tuple[int, int] | None]:
     """Derive the documented emotion interval and optional signal event."""
 
     resolved_emotion = emotion if emotion in _EMOTION_LEVEL_RANGES else "Joy"
     resolved_value = max(0.0, min(100.0, float(value)))
     for level, minimum, maximum in _EMOTION_LEVEL_RANGES[resolved_emotion]:
         if minimum <= resolved_value <= maximum:
-            return (
-                level,
-                f"EMO_{resolved_emotion.upper()}_{level}",
-                (minimum, maximum),
-            )
+            return level, f"EMO_{resolved_emotion.upper()}_{level}", (minimum, maximum),
+
     return "NONE", None, None
 
 _ACTION_DEMAND: dict[str, str] = {
@@ -545,6 +744,54 @@ def _build_custom_audio(fields: dict[str, str]) -> tuple[str, tuple[InjectionMes
 
     label = f"Audio {event_type}"
     return label, (InjectionMessage(config.TOPICS["audio_event"], payload),)
+
+
+def _build_custom_tactile(
+    fields: dict[str, str],
+) -> tuple[str, tuple[InjectionMessage, ...]]:
+    event_type = _field(
+        fields,
+        "tactile_event_type",
+        "EVT_TACTILE_HEAD_PET",
+    ).upper()
+    if event_type not in TACTILE_EVENT_SPECS:
+        event_type = "EVT_TACTILE_HEAD_PET"
+    event = build_local_tactile_event(event_type)
+    return (
+        f"Tactile {event.payload['label']}",
+        (InjectionMessage(LOCAL_TACTILE_TOPIC, event.payload),),
+    )
+
+
+def _build_custom_damage(
+    fields: dict[str, str],
+) -> tuple[str, tuple[InjectionMessage, ...]]:
+    event_type = _field(
+        fields,
+        "damage_event_type",
+        "EVT_DAMAGE_LIGHT_IMPACT",
+    ).upper()
+    if event_type not in EXTERNAL_DAMAGE_SPECS:
+        event_type = "EVT_DAMAGE_LIGHT_IMPACT"
+    risk_score = _clamp(
+        _float_field(fields, "damage_risk_score", 60.0),
+        0.0,
+        100.0,
+    )
+    confirmed = _field(
+        fields,
+        "damage_confirmed",
+        "unconfirmed",
+    ).strip().lower() in {"true", "confirmed", "yes", "1"}
+    event = build_local_external_damage_event(
+        event_type,
+        risk_score,
+        confirmed=confirmed,
+    )
+    return (
+        f"Damage {event.payload['label']}",
+        (InjectionMessage(LOCAL_EXTERNAL_DAMAGE_TOPIC, event.payload),),
+    )
 
 
 def _build_custom_need(fields: dict[str, str]) -> tuple[str, tuple[InjectionMessage, ...]]:

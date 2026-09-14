@@ -5,14 +5,15 @@ import unittest
 from rclpy.qos import QoSReliabilityPolicy
 
 from marsdog_sim2d import config
-from marsdog_sim2d.parsers import (
+from simevent.parsers import (
     parse_internal_need_signal_event,
     parse_internal_need_state,
     parse_simulation_time_state,
 )
-from marsdog_sim2d.ros_bridge import RosBridge
-from marsdog_sim2d.sim_state import SimEvent, SimState
-from marsdog_sim2d.virtual_executor import _normalize_action_debug_payload
+from marsdog_sim2d.bridge.ros_bridge import RosBridge
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.simevent.sim_state import SimState
+from bridge.virtual_executor import _normalize_action_debug_payload
 
 
 class LiveStateProtocolTests(unittest.TestCase):

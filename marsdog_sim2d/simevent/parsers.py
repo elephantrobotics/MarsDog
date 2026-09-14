@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from . import config
-from .sim_state import SimEvent
+from marsdog_sim2d import config
+from marsdog_sim2d.simevent.events import SimEvent
 
 Parser = Callable[[dict[str, Any]], SimEvent]
 
@@ -109,12 +109,7 @@ def parse_audio_event(data: dict[str, Any]) -> SimEvent:
     _append_if_present(parts, "speaker", payload.get("speaker_id"))
     _append_if_present(parts, "command", payload.get("command_id"))
     _append_if_present(parts, "text", payload.get("asr_text"))
-    return SimEvent(
-        "audio_event",
-        config.TOPICS["audio_event"],
-        payload,
-        " ".join(parts),
-    )
+    return SimEvent("audio_event", config.TOPICS["audio_event"], payload, " ".join(parts))
 
 
 def parse_internal_need_state(data: dict[str, Any]) -> SimEvent:
@@ -472,21 +467,15 @@ def _first_present(*values: Any) -> Any:
     return None
 
 
-def _payload_object(
-        data: dict[str, Any],
-        *container_keys: str,
-        required_keys: tuple[str, ...],
-) -> dict[str, Any]:
+def _payload_object(data: dict[str, Any], *container_keys: str, required_keys: tuple[str, ...]) -> dict[str, Any]:
     """Return a documented object or a common JSON envelope containing it."""
 
     if any(key in data for key in required_keys):
         return data
+
     for key in container_keys:
         candidate = data.get(key)
-        if (
-                isinstance(candidate, dict)
-                and any(name in candidate for name in required_keys)
-        ):
+        if isinstance(candidate, dict) and any(name in candidate for name in required_keys):
             return {**data, **candidate}
     return data
 

@@ -6,7 +6,7 @@ import arcade
 import arcade.gui
 
 from marsdog_sim2d import config
-from marsdog_sim2d.components.drawing import measure_text
+from marsdog_sim2d.components.text import measure_text
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -82,8 +82,7 @@ class AMessageBox(
         button_height = float(config.CONTROL_HEIGHT + config.SPACE_XS)
         body_line_width = max(
             (
-                measure_text(line, font_size=config.FONT_SIZE_BODY)[0]
-                for line in message_text.split("\n")
+                measure_text(line, font_size=config.FONT_SIZE_BODY)[0] for line in message_text.split("\n")
             ),
             default=0,
         )
@@ -329,13 +328,8 @@ class AJsonPreviewer(arcade.gui.UITextArea):
             scroll_speed=24.0,
             size_hint=size_hint,
         )
-        self.with_background(
-            color=(*config.COLORS["preview_background"], 255),
-        )
-        self.with_border(
-            color=(*config.COLORS["border_strong"], 255),
-            width=1,
-        )
+        self.with_background(color=_as_color((*config.COLORS["preview_background"], 255)))
+        self.with_border(color=_as_color((*config.COLORS["border_strong"], 255)), width=1)
         self.with_padding(all=config.SPACE_SM)
 
     @property
@@ -475,11 +469,7 @@ def _wrap_message_text(
     return "\n".join(wrapped_lines)
 
 
-def arcade_button_style(
-    *,
-    primary: bool = False,
-    active: bool = False,
-) -> dict[str, T.Any]:
+def arcade_button_style(primary: bool = False, active: bool = False) -> dict[str, T.Any]:
     """Return the shared theme for native Arcade flat buttons."""
 
     normal_background = (
@@ -489,11 +479,8 @@ def arcade_button_style(
         if active
         else config.COLORS["surface_raised"]
     )
-    normal_border = (
-        config.COLORS["accent"]
-        if primary or active
-        else config.COLORS["border"]
-    )
+    normal_border = config.COLORS["accent"] if primary or active else config.COLORS["border"]
+
     style_type = arcade.gui.UIFlatButton.UIStyle
     common = {
         "font_name": config.FONT_NAMES,

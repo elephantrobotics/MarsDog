@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, call, patch
 
-from marsdog_sim2d.views import widgets as widgets_module
+from marsdog_sim2d.pages import widgets as widgets_module
 from marsdog_sim2d.components import widget as widget_module
 from marsdog_sim2d.components.widget import (
     AButton,
@@ -12,8 +12,8 @@ from marsdog_sim2d.components.widget import (
     BBox,
     _format_json,
 )
-from marsdog_sim2d.sim_state import SimState
-from marsdog_sim2d.views.widgets import StatusWidgets
+from simevent.sim_state import SimState
+from marsdog_sim2d.pages.widgets import StatusWidgets
 
 
 class JsonPreviewFormattingTests(unittest.TestCase):

@@ -1,17 +1,17 @@
 import unittest
 
-from marsdog_sim2d.action_visuals import (
+from marsdog_sim2d.behavior.action_visuals import (
     ACTION_VISUALS,
     is_text_only_action,
 )
-from marsdog_sim2d.behavior_contract import contract_action_ids
-from marsdog_sim2d.views.renderer import (
+from marsdog_sim2d.behavior.behavior_contract import contract_action_ids
+from marsdog_sim2d.pages.renderer import (
     _dog_pose_for_action,
     _dog_sprite_angle,
     _sleep_indicator_visible,
 )
-from marsdog_sim2d.sim_state import SimState
-from marsdog_sim2d.virtual_executor import VirtualRoom
+from simevent.sim_state import SimState
+from bridge.virtual_executor import VirtualRoom
 
 
 class DogPoseMappingTests(unittest.TestCase):
@@ -67,6 +67,7 @@ class DogPoseMappingTests(unittest.TestCase):
             {
                 "goal_id": "toilet",
                 "behavior_name": "barkShortAlert",
+                "params": {"toilet_spot_taught": True},
                 "timeout_sec": 4.0,
             }
         )

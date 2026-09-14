@@ -1,7 +1,7 @@
 import unittest
 
 from marsdog_sim2d import config
-from marsdog_sim2d.event_injector import (
+from marsdog_sim2d.simevent.event_injector import (
     build_custom_injection_command,
     resolve_emotion_output,
     resolve_need_output,

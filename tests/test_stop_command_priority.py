@@ -5,10 +5,15 @@ import time
 import unittest
 
 from marsdog_sim2d import config
-from marsdog_sim2d.arcade_viewer_node import SimWindow
-from marsdog_sim2d.event_injector import default_field_values
-from marsdog_sim2d.sim_state import SimEvent, SimState
-from marsdog_sim2d.virtual_executor import LocalVirtualRunner
+from marsdog_sim2d.arcade_viewer_node import (
+    SimWindow,
+    _internal_need_owns_control,
+)
+from simevent.event_injector import default_field_values
+from controllers.left_panel_controller import LeftPanelController
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.simevent.sim_state import SimState
+from bridge.virtual_executor import LocalVirtualRunner
 
 
 class StopCommandPriorityTests(unittest.TestCase):
@@ -31,10 +36,12 @@ class StopCommandPriorityTests(unittest.TestCase):
         harness._manual_need_triggered_at = None
         harness._manual_hunger_phase = None
         harness._next_emotion_idle_at = 0.0
-        harness._resolved_fields = lambda group: {
-            **default_field_values(),
-            **harness.sim_state.event_injector_fields,
-        }
+        harness.left_panel_controller = LeftPanelController(
+            harness.sim_state.injection_form
+        )
+        harness._handle_stop_voice_command = (
+            lambda: SimWindow._handle_stop_voice_command(harness)
+        )
         return harness
 
     @staticmethod
@@ -250,7 +257,7 @@ class StopCommandPriorityTests(unittest.TestCase):
                 }
             },
         )
-        state.event_injector_fields = {
+        state.injection_form.fields = {
             **default_field_values(),
             "audio_event_type": "EVT_VOICE_COMMAND_KNOWN",
             "audio_command_id": "CMD_STOP",
@@ -258,7 +265,12 @@ class StopCommandPriorityTests(unittest.TestCase):
         }
         harness = self._window_harness(state)
 
-        SimWindow._send_custom_injection(harness, "Audio")
+        effect = harness.left_panel_controller.prepare_injection(
+            "Audio",
+            user_visible=state.ui_user_visible,
+            internal_need_active=_internal_need_owns_control(harness),
+        )
+        SimWindow._apply_left_panel_effect(harness, effect)
 
         self.assertTrue(harness.injection_queue.empty())
         self.assertEqual(

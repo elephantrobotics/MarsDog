@@ -11,26 +11,33 @@ import arcade
 import arcade.gui
 
 from marsdog_sim2d import config
-from marsdog_sim2d.action_visuals import visual_for_action
+from marsdog_sim2d.behavior.action_visuals import visual_for_action
 from marsdog_sim2d.components import AButton, AJsonPreviewer, AMessageBox, ATopicChip, BBox
-from marsdog_sim2d.components.drawing import draw_text, measure_text
-from marsdog_sim2d.sim_state import SimState
-from marsdog_sim2d.voice_commands import voice_command_display
+from marsdog_sim2d.components.text import draw_text, measure_text
+from marsdog_sim2d.simevent.abnormal_simulation import format_emotion_delta
+from marsdog_sim2d.simevent.external_damage_simulation import (
+    EXTERNAL_DAMAGE_SPECS,
+)
+from marsdog_sim2d.simevent.event_injector import TACTILE_EVENT_SPECS
+from marsdog_sim2d.simevent.sim_state import SimState
+from marsdog_sim2d.behavior.voice_commands import voice_command_display
 
-INPUT_TABS = ("Event", "State", "Command", "Scenario")
-EVENT_SOURCES = ("Audio", "Vision", "Result")
-STATE_TYPES = ("Need", "Emotion", "Personality")
-LOG_SOURCES = ("VIS", "AUD", "NEED", "EMO", "BEH", "EXEC", "RESULT", "SYS")
-
-TAB_LABELS = {
-    "Event": "事件",
-    "State": "状态",
-    "Command": "指令",
-    "Scenario": "场景",
-}
+LOG_SOURCES = (
+    "VIS",
+    "AUD",
+    "TAC",
+    "NEED",
+    "EMO",
+    "BEH",
+    "EXEC",
+    "RESULT",
+    "SYS",
+)
 
 OPTION_LABELS = {
     "Audio": "声音",
+    "Tactile": "触觉",
+    "Damage": "外部损伤",
     "Vision": "视觉",
     "Result": "行为结果",
     "Need": "需求",
@@ -82,6 +89,10 @@ OPTION_LABELS = {
     "CANCELED": "取消",
     "Hunger": "饥饿",
     "Bladder": "排泄",
+    "false": "未示教定点",
+    "true": "已示教定点",
+    "unconfirmed": "未确认",
+    "confirmed": "已确认",
     "Sleepiness": "困倦",
     "Cleanliness": "清洁",
     "Energy": "能量",
@@ -91,6 +102,7 @@ OPTION_LABELS = {
     "Excite": "兴奋",
     "Anxiety": "焦虑",
     "Fear": "恐惧",
+    "Disgust": "厌恶",
     "Curious": "好奇",
     "Calm": "平静",
     "Custom": "自定义",
@@ -113,88 +125,26 @@ OPTION_LABELS = {
     "cancelled": "已取消",
     "canceled": "已取消",
 }
+OPTION_LABELS.update(
+    {
+        event_type: str(spec["label"])
+        for event_type, spec in TACTILE_EVENT_SPECS.items()
+    }
+)
+OPTION_LABELS.update(
+    {
+        event_type: spec.label
+        for event_type, spec in EXTERNAL_DAMAGE_SPECS.items()
+    }
+)
 
-SCENARIO_LABELS = {
-    "high_hunger": ("高饥饿", "模拟饥饿满溢并触发觅食"),
-    "low_energy": ("低能量", "模拟能量不足并触发充电"),
-    "owner_calls": ("主人呼叫", "主人出现并呼叫 MarsDog"),
-    "joy_interaction": ("快乐互动", "主人出现并注入高快乐情绪"),
-    "fear_response": ("恐惧反应", "陌生人出现并注入高恐惧情绪"),
-    "explore_toy": ("探索玩具", "发现玩具并触发探索需求"),
-}
-
-SELECT_OPTIONS: dict[str, tuple[str, ...]] = {
-    "audio_event_type": (
-        "EVT_VOICE_COMMAND_KNOWN",
-        "EVT_VOICE_COMMAND_UNKNOWN",
-        "EVT_VOICE_CALL_NAME",
-        "EVT_VOICE_MASTER_ID",
-        "EVT_VOICE_STRANGER_ID",
-        "EVT_VOICE_PRAISE",
-        "EVT_VOICE_SCOLD",
-    ),
-    "audio_command_id": (
-        "CMD_SIT",
-        "CMD_COME_HERE",
-        "CMD_HAND",
-        "CMD_FOLLOW",
-        "CMD_STOP",
-        "CMD_LIE_DOWN",
-        "CMD_STAND_UP",
-        "CMD_WAIT",
-        "CMD_GIVE_PAW",
-        "CMD_HIGH_FIVE",
-        "CMD_ROLL_OVER",
-        "CMD_SPIN",
-        "CMD_RETURN_TO_OWNER",
-        "CMD_DROP_OBJECT",
-        "CMD_PLAY_DEAD",
-        "CMD_BRING_OBJECT",
-        "CMD_FETCH",
-    ),
-    "vision_events": (
-        "EVT_VISION_MASTER",
-        "EVT_VISION_STRANGER",
-        "EVT_VISION_MASTER_HAPPY",
-        "EVT_VISION_MASTER_SAD",
-        "EVT_VISION_MASTER_NEUTRAL",
-        "EVT_VISION_FALL",
-        "EVT_VISION_STOP_GESTURE",
-        "EVT_VISION_TOY",
-        "EVT_VISION_FOOD",
-        "EVT_VISION_ANIMAL_CALM",
-        "EVT_VISION_ANIMAL_GREET",
-        "EVT_VISION_ANIMAL_PLAY",
-        "EVT_VISION_ANIMAL_BOUNDARY",
-    ),
-    "need_demand": config.DEMAND_NAMES,
-    "emotion_name": config.EMOTION_NAMES,
-    "result_type": ("STARTED", "COMPLETED", "FAILED", "TIMEOUT", "INTERRUPTED", "CANCELLED"),
-    "personality_profile": (
-        "Custom",
-        "GentleCompanion",
-        "SunnyExplorer",
-        "LoyalGuardian",
-        "ProudIndependent",
-    ),
-    "personality_trait": ("A", "O", "E", "C"),
-}
 
 TOP_ENDPOINTS = (
     ("VIS", (config.TOPICS["visual_event"],)),
     ("AUDIO", (config.TOPICS["audio_event"],)),
-    (
-        "NEED",
-        (config.TOPICS["internal_need_state"], config.TOPICS["internal_need_signal_event"]),
-    ),
-    (
-        "EMO",
-        (config.TOPICS["emotion_state"], config.TOPICS["emotion_signal_event"]),
-    ),
-    (
-        "EXEC",
-        (config.ACTION_FEEDBACK_TOPIC, config.ACTION_GOAL_TOPIC, config.ACTION_RESULT_TOPIC),
-    ),
+    ("NEED", (config.TOPICS["internal_need_state"], config.TOPICS["internal_need_signal_event"])),
+    ("EMO", (config.TOPICS["emotion_state"], config.TOPICS["emotion_signal_event"])),
+    ("EXEC", (config.ACTION_FEEDBACK_TOPIC, config.ACTION_GOAL_TOPIC, config.ACTION_RESULT_TOPIC)),
 )
 
 
@@ -329,23 +279,10 @@ class StatusWidgets:
         )
 
         chip_gap = 7.0
-        chip_area_left = max(
-            380.0 if config.WINDOW_WIDTH >= 1280 else 150.0,
-            config.LEFT_PANEL_RIGHT + 8.0,
-        )
-        chip_area_width = max(
-            360.0,
-            config.RIGHT_PANEL_LEFT - chip_area_left - 12.0,
-        )
-        chip_width = min(
-            118.0,
-            (chip_area_width - chip_gap * (len(TOP_ENDPOINTS) - 1))
-            / len(TOP_ENDPOINTS),
-        )
-        chip_row_width = (
-                chip_width * len(TOP_ENDPOINTS)
-                + chip_gap * (len(TOP_ENDPOINTS) - 1)
-        )
+        chip_area_left = max(380.0 if config.WINDOW_WIDTH >= 1280 else 150.0, config.LEFT_PANEL_RIGHT + 8.0)
+        chip_area_width = max(360.0, config.RIGHT_PANEL_LEFT - chip_area_left - 12.0)
+        chip_width = min(118.0, (chip_area_width - chip_gap * (len(TOP_ENDPOINTS) - 1)) / len(TOP_ENDPOINTS))
+        chip_row_width = chip_width * len(TOP_ENDPOINTS) + chip_gap * (len(TOP_ENDPOINTS) - 1)
         chip_x = chip_area_left + (chip_area_width - chip_row_width) / 2
         chip_y = config.TOP_BAR_BOTTOM + 6.0
 
@@ -517,8 +454,27 @@ class StatusWidgets:
                 },
             ),
             (
+                62.0,
+                (
+                    str(state.ui_external_damage["risk_level"])
+                    if state.ui_external_damage
+                    else f"等级 {state.ui_abnormal_level}"
+                ),
+                "cycle_abnormal_level",
+                "warning",
+                {"secondary": True},
+            ),
+            (
                 92.0,
-                "解除异常" if state.ui_abnormal_simulation_active else "异常模拟",
+                (
+                    "解除损伤"
+                    if state.ui_external_damage
+                    else (
+                        "解除异常"
+                        if state.ui_abnormal_simulation_active
+                        else "异常模拟"
+                    )
+                ),
                 "toggle_abnormal_simulation",
                 "warning",
                 {
@@ -626,9 +582,31 @@ class StatusWidgets:
 
         y -= 30
         visual = visual_for_action(state.action_current_action)
+        target_row = ("目标", state.action_target_label)
+        if state.ui_external_damage:
+            damage = state.ui_external_damage
+            target_row = (
+                "损伤风险",
+                (
+                    f"{damage['risk_level']} {damage['risk_score']:g}分 · "
+                    f"{damage['duration_label']}"
+                ),
+            )
+        elif state.ui_abnormal_simulation_active:
+            emotion_labels = {
+                name: option_label(name)
+                for name in state.ui_abnormal_emotion_delta
+            }
+            target_row = (
+                "情绪影响",
+                format_emotion_delta(
+                    state.ui_abnormal_emotion_delta,
+                    emotion_labels,
+                ),
+            )
         rows = (
             ("阶段", f"{state.action_stage_index or '-'}/{state.action_stage_total or '-'} {state.action_stage_label}"),
-            ("目标", state.action_target_label),
+            target_row,
             ("2D展示", f"图片: {visual.pose}" if visual is not None else ("等待动作" if state.action_current_action in {"", "-"} else "仅文字")),
             ("可中断", _interrupt_text(state.action_safe_to_interrupt, state.action_status)),
         )
@@ -762,7 +740,7 @@ class StatusWidgets:
 
     def _draw_perception_card(self, state: SimState, x: float, top: float, width: float) -> float:
         collapsed = "perception" in state.ui_collapsed_cards
-        height = 42 if collapsed else 184
+        height = 42 if collapsed else 209
         self._card(x, top, width, height, "感知摘要", "perception", state)
         if collapsed:
             return top - height - config.CARD_GAP
@@ -772,6 +750,7 @@ class StatusWidgets:
         visual = state.latest_visual_event or {}
         visual_raw = _dict(visual.get("raw"))
         audio = state.latest_audio_event or {}
+        tactile = state.latest_tactile_event or {}
         target = state.active_target or {}
         confidence = target.get("confidence") or target.get("face_confidence") or "-"
         lines = [
@@ -794,6 +773,10 @@ class StatusWidgets:
             {
                 "最近事件": _event_list(visual.get('events')),
                 "语音识别": voice_command_display(audio)
+            },
+            {
+                "触觉": _dash(tactile.get("label")),
+                "本地情绪": _emotion_delta_text(tactile.get("emotion_delta")),
             },
         ]
 
@@ -1622,37 +1605,6 @@ def _draw_toolbar_icon(
         arcade.draw_circle_filled(center_x, center_y, 2, color)
 
 
-def event_type_field(group: str) -> str | None:
-    return {
-        "Audio": "audio_event_type",
-        "Vision": "vision_events",
-        "Result": "result_type",
-    }.get(group)
-
-
-def event_parameter_fields(group: str) -> tuple[tuple[str, str, str], ...]:
-    fields = {
-        "Audio": (
-            ("audio_asr_text", "ASR 文本", "input"),
-            ("audio_command_id", "语音指令", "select"),
-            ("audio_speaker_id", "说话人", "input"),
-            ("audio_confidence", "置信度", "input"),
-            ("audio_wake_angle", "声源角度", "input"),
-        ),
-        "Vision": (
-            ("vision_identity", "目标 ID", "input"),
-            ("vision_pose", "姿态", "input"),
-            ("vision_object", "物体标签", "input"),
-        ),
-        "Result": (
-            ("result_action_type", "动作类型", "input"),
-            ("result_demand_type", "需求类型", "input"),
-            ("result_metadata", "Metadata", "input"),
-        ),
-    }
-    return fields.get(group, ())
-
-
 def _endpoint_status(state: SimState, topics: tuple[str, ...], label: str, now: float) -> tuple[str, str, str]:
     stats_items = [state.topic_stats.get(topic) for topic in topics]
     stats_items = [stats for stats in stats_items if stats is not None]
@@ -1889,6 +1841,7 @@ def _draw_source_tag(x: float, top: float, source: str) -> None:
     color = {
         "VIS": config.COLORS["visual"],
         "AUD": config.COLORS["audio"],
+        "TAC": config.COLORS["tactile"],
         "NEED": config.COLORS["need"],
         "EMO": config.COLORS["emotion"],
         "EXEC": config.COLORS["accent"],
@@ -1897,6 +1850,15 @@ def _draw_source_tag(x: float, top: float, source: str) -> None:
     width = 42 if len(source) <= 4 else 53
     arcade.draw_lbwh_rectangle_filled(x, top - 12, width, 14, _mix(color, config.COLORS["log_background"], 0.64))
     draw_text(source, x + width / 2, top, color, config.FONT_SIZE_AUX, bold=True, anchor_x="center", anchor_y="top")
+
+
+def _emotion_delta_text(value: Any) -> str:
+    if not isinstance(value, dict) or not value:
+        return "-"
+    return " ".join(
+        f"{option_label(str(name))}+{amount}"
+        for name, amount in value.items()
+    )
 
 
 def _draw_badge(x: float, top: float, text: str, color: tuple[int, int, int], right: bool = False) -> None:

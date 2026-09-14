@@ -11,10 +11,12 @@ import re
 import time
 from typing import Any
 
-from . import config
-from .action_visuals import visual_for_action
-from .behavior_contract import stage_position
-from .voice_commands import behavior_runs_beside_owner
+from marsdog_sim2d import config
+from marsdog_sim2d.behavior.action_visuals import visual_for_action
+from marsdog_sim2d.behavior.behavior_contract import stage_position
+from marsdog_sim2d.behavior.voice_commands import behavior_runs_beside_owner
+from marsdog_sim2d.simevent.events import SimEvent
+from marsdog_sim2d.simevent.injection import InjectionFormState
 
 
 _ACTION_EVENT_KINDS = frozenset({"action_goal", "action_feedback", "action_result"})
@@ -28,7 +30,14 @@ _SYSTEM_EVENT_KINDS = frozenset(
         "action_server_state",
     }
 )
-_PERCEPTION_EVENT_KINDS = frozenset({"visual_event", "audio_event"})
+_PERCEPTION_EVENT_KINDS = frozenset(
+    {
+        "visual_event",
+        "audio_event",
+        "tactile_event",
+        "external_damage_event",
+    }
+)
 _INTERNAL_STATE_EVENT_KINDS = frozenset(
     {
         "internal_need_state",
@@ -38,18 +47,6 @@ _INTERNAL_STATE_EVENT_KINDS = frozenset(
         "personality_state",
     }
 )
-
-
-@dataclass(slots=True)
-class SimEvent:
-    """Normalized event passed from ROS callbacks to the Arcade thread."""
-
-    kind: str
-    topic: str
-    payload: dict[str, Any]
-    summary: str
-    received_at: float = field(default_factory=time.time)
-    format_hint: str | None = None
 
 
 @dataclass(slots=True)
@@ -89,6 +86,8 @@ class SimState:
     active_target: dict[str, Any] | None = None
     latest_visual_event: dict[str, Any] | None = None
     latest_audio_event: dict[str, Any] | None = None
+    latest_tactile_event: dict[str, Any] | None = None
+    latest_external_damage_event: dict[str, Any] | None = None
     simulation_time_state: dict[str, Any] | None = None
     simulation_time_received_at: float | None = None
     simulation_time_source: str | None = None
@@ -160,21 +159,13 @@ class SimState:
     action_active_sequence: int = 0
     manual_injection_count: int = 0
     last_manual_injection: dict[str, Any] | None = None
-    event_injector_open: bool = False
-    event_injector_group: str = "Audio"
-    event_injector_fields: dict[str, str] = field(default_factory=dict)
+    injection_form: InjectionFormState = field(default_factory=InjectionFormState)
     audio_wake_angle: float | None = None
 
     # UI-only state. These fields never alter ROS topic names, message fields,
     # or the state values received from ROS2.
     ui_left_collapsed: bool = False
-    ui_input_tab: str = "Event"
-    ui_payload_preview: str = ""
-    ui_payload_preview_dirty: bool = False
     ui_payload_preview_expanded: bool = False
-    ui_payload_preview_scroll: int = 0
-    ui_preview_topics: list[str] = field(default_factory=list)
-    ui_selected_scenario: str = "high_hunger"
     ui_pending_placement: dict[str, Any] | None = None
     ui_selected_object: str | None = None
     ui_show_fov: bool = True
@@ -189,6 +180,11 @@ class SimState:
     ui_owner_action_hold_until: float = 0.0
     ui_stopped_external_goal_ids: set[str] = field(default_factory=set)
     ui_abnormal_simulation_active: bool = False
+    ui_abnormal_level: str = "L0"
+    ui_abnormal_step_index: int = 0
+    ui_abnormal_step_started_at: float | None = None
+    ui_abnormal_emotion_delta: dict[str, Any] = field(default_factory=dict)
+    ui_external_damage: dict[str, Any] | None = None
     ui_abnormal_interrupted_goal_id: str | None = None
     ui_abnormal_paused_action: dict[str, Any] | None = None
     ui_abnormal_started_monotonic: float | None = None
@@ -207,7 +203,17 @@ class SimState:
     ui_collapsed_cards: set[str] = field(default_factory=set)
     ui_right_scroll: float = 0.0
     ui_log_filters: set[str] = field(
-        default_factory=lambda: {"VIS", "AUD", "NEED", "EMO", "BEH", "EXEC", "RESULT", "SYS"}
+        default_factory=lambda: {
+            "VIS",
+            "AUD",
+            "TAC",
+            "NEED",
+            "EMO",
+            "BEH",
+            "EXEC",
+            "RESULT",
+            "SYS",
+        }
     )
     ui_log_search: str = ""
     ui_log_paused: bool = False
@@ -352,7 +358,11 @@ class SimState:
             event.kind in _ACTION_EVENT_KINDS
             and str(event.payload.get("goal_id") or "").startswith("local-")
         )
-        if local_ui_action or event.kind == "ros_graph_state":
+        if (
+            local_ui_action
+            or event.kind == "ros_graph_state"
+            or event.topic.startswith("local://")
+        ):
             return
 
         topic_stats = self.topic_stats.setdefault(event.topic, TopicStats())
@@ -361,11 +371,7 @@ class SimState:
         topic_stats.last_summary = event.summary
         topic_stats.recent_received_at.append(event.received_at)
 
-    def _defer_abnormal_event(
-        self,
-        event: SimEvent,
-        abnormal_replay: bool,
-    ) -> bool:
+    def _defer_abnormal_event(self, event: SimEvent, abnormal_replay: bool) -> bool:
         if (
             self.ui_abnormal_simulation_active
             and not abnormal_replay
@@ -530,6 +536,20 @@ class SimState:
             active_target = event.payload.get("active_target")
             if isinstance(active_target, dict):
                 self.active_target = active_target
+            return
+
+        if event.kind == "tactile_event":
+            self.latest_tactile_event = {
+                **event.payload,
+                "received_at": event.received_at,
+            }
+            return
+
+        if event.kind == "external_damage_event":
+            self.latest_external_damage_event = {
+                **event.payload,
+                "received_at": event.received_at,
+            }
             return
 
         self.latest_audio_event = {
@@ -1722,6 +1742,8 @@ def _ui_event_source(event: SimEvent) -> str:
         return "VIS"
     if event.kind == "audio_event":
         return "AUD"
+    if event.kind == "tactile_event":
+        return "TAC"
     if event.kind.startswith("internal_need"):
         return "NEED"
     if event.kind.startswith("emotion"):

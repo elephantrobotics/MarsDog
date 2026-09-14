@@ -1,8 +1,8 @@
 import math
 import unittest
 
-from marsdog_sim2d.action_visuals import visual_for_action
-from marsdog_sim2d.virtual_executor import VirtualRoom
+from marsdog_sim2d.behavior.action_visuals import visual_for_action
+from bridge.virtual_executor import VirtualRoom
 
 
 class FoodExitVisualTests(unittest.TestCase):
