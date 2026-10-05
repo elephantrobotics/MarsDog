@@ -43,7 +43,7 @@ from marsdog_vision_interaction.core.stranger_emotion_context import (
 )
 from marsdog_vision_interaction.fusion.stereo_fusion import get_target_manager
 from marsdog_vision_interaction.messages.face_identity import (
-    ALLOWED_FACE_IDENTITIES,
+    pose_event_identity_eligible,
 )
 from marsdog_vision_interaction.messages.visual_event import (
     normalize_visual_event,
@@ -1480,7 +1480,7 @@ class VisionInteractionNode(Node):
 
         gate = (
             "open"
-            if VisionInteractionNode._pose_event_identity_confirmed(active)
+            if VisionInteractionNode._pose_event_identity_eligible(active)
             else "blocked"
         )
         if not pose_action and not hand_actions:
@@ -2242,12 +2242,11 @@ class VisionInteractionNode(Node):
         return result
 
     @staticmethod
-    def _pose_event_identity_confirmed(active: dict[str, Any]) -> bool:
-        identity = str(active.get("identity", ""))
-        return (
-            identity in ALLOWED_FACE_IDENTITIES
-            and str(active.get("identity_state", "")) == "confirmed_known"
-            and str(active.get("tracking_state", "")) == "tracking"
+    def _pose_event_identity_eligible(active: dict[str, Any]) -> bool:
+        return pose_event_identity_eligible(
+            str(active.get("identity", "")),
+            str(active.get("identity_state", "")),
+            str(active.get("tracking_state", "")),
         )
 
     @staticmethod
@@ -2259,7 +2258,7 @@ class VisionInteractionNode(Node):
         active = observation.get("active_target", {})
         identity = str(active.get("identity", "unknown"))
         identity_confirmed = (
-            VisionInteractionNode._pose_event_identity_confirmed(active)
+            VisionInteractionNode._pose_event_identity_eligible(active)
         )
         if observation.get("faces"):
             face_event = face_identity_to_vision_event(identity)
