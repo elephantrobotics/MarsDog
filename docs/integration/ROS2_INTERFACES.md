@@ -269,9 +269,12 @@ float64 latency_ms
 | `delete_face` | `name` | `ok` |
 
 人脸固定身份为 `owner/family_member_1～4`，每个身份最多5张，稳定 `sample_id`
-为1～5。HTTP 样本 CRUD 见视觉项目 `README.md`；当前接口暂不鉴权，远程绑定仅限
-可信隔离局域网，生物数据只保存在视觉设备本地。HTTP 响应包含 `X-Request-ID`，
-新增/替换/删除响应体和业务错误也返回相同的 `request_id`，用于关联结构化请求日志。
+为1～5。HTTP 样本 CRUD 见视觉项目 `README.md`；当前接口暂不鉴权。共享的
+`config/vision.yaml` 将 Face API 绑定到 `0.0.0.0:8092`，同一 LAN 的客户端使用
+视觉设备 LAN IPv4 访问；该配置由 demo 与完整视觉节点共用，运行任一进程都会在可达
+接口上提供 API，必须通过可信子网和主机防火墙限制来源。生物数据只保存在视觉设备本地。
+HTTP 响应包含 `X-Request-ID`，新增/替换/删除响应体和业务错误也返回相同的
+`request_id`，用于关联结构化请求日志。
 
 `params_json` 必须是 JSON object。过渡期仍兼容 `[ {"key":"...","value":"..."} ]`。
 视觉节点测量并返回本次回调的 `latency_ms`；该值包括同步推理时间，但仍不能

@@ -263,10 +263,14 @@ services:
 
 http_apis:
   vision_face_samples:
-    default_address: http://127.0.0.1:8092
+    default_bind_host: 0.0.0.0
+    port: 8092
+    local_access_address: http://127.0.0.1:8092
+    lan_access_template: http://<vision-device-LAN-IPv4>:8092
     openapi: /docs
     authentication: none_temporary
     remote_bind_requires_trusted_lan: true
+    shared_config_used_by_demo_and_full_node: true
     allowed_names: [owner, family_member_1, family_member_2, family_member_3, family_member_4]
     max_faces: 5
     max_samples_per_face: 5

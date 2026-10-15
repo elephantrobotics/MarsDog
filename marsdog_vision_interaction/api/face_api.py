@@ -20,7 +20,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from marsdog_vision_interaction.messages.face_identity import FaceIdentity
 
@@ -54,6 +54,11 @@ class FaceApiServer:
         sample_get_handler: Callable[[str, int], dict[str, Any]],
         sample_replace_handler: Callable[[str, int, bytes], dict[str, Any]],
         sample_delete_handler: Callable[[str, int], dict[str, Any]],
+        *,
+        demo_status_handler: Callable[[], dict[str, Any]] | None = None,
+        camera_frame_handler: Callable[[], Any] | None = None,
+        enrollment_start_handler: Callable[[str, int | None], dict[str, Any]] | None = None,
+        enrollment_cancel_handler: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._config = dict(config)
         self._upload_handler = upload_handler
@@ -62,6 +67,10 @@ class FaceApiServer:
         self._sample_get_handler = sample_get_handler
         self._sample_replace_handler = sample_replace_handler
         self._sample_delete_handler = sample_delete_handler
+        self._demo_status_handler = demo_status_handler
+        self._camera_frame_handler = camera_frame_handler
+        self._enrollment_start_handler = enrollment_start_handler
+        self._enrollment_cancel_handler = enrollment_cancel_handler
         self._enabled = bool(config.get("enabled", True))
         self._host = str(config.get("host", "127.0.0.1")).strip()
         self._port = int(config.get("port", 8092))
@@ -353,5 +362,91 @@ class FaceApiServer:
             result = self._sample_delete_handler(name.value, sample_id)
             raise_for_result(result)
             return {"request_id": request_id(request), **result}
+
+        if self._demo_status_handler is not None:
+            @app.get("/", include_in_schema=False)
+            async def face_manager_page() -> Any:
+                page = FilePath(__file__).resolve().parent.parent / "web" / "face_manager.html"
+                if not page.is_file():
+                    raise HTTPException(status_code=404, detail="face manager page unavailable")
+                return FileResponse(page, media_type="text/html; charset=utf-8")
+
+            @app.get("/api/v1/demo/status")
+            async def demo_status() -> dict[str, Any]:
+                try:
+                    return self._demo_status_handler()  # type: ignore[misc]
+                except Exception as exc:
+                    logger.exception("Face demo status callback failed")
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"face demo status unavailable: {exc}",
+                    ) from exc
+
+        if self._camera_frame_handler is not None:
+            def encode_preview_frame() -> bytes | None:
+                try:
+                    frame = self._camera_frame_handler()  # type: ignore[misc]
+                    if frame is None or getattr(frame, "ndim", 0) != 3:
+                        return None
+                    import cv2
+
+                    height, width = frame.shape[:2]
+                    if width > 640:
+                        frame = cv2.resize(
+                            frame,
+                            (640, max(1, int(height * 640 / width))),
+                            interpolation=cv2.INTER_AREA,
+                        )
+                    ok, encoded = cv2.imencode(
+                        ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 78]
+                    )
+                    return encoded.tobytes() if ok else None
+                except Exception:
+                    logger.debug("Face camera preview frame unavailable", exc_info=True)
+                    return None
+
+            def camera_stream() -> Any:
+                while True:
+                    payload = encode_preview_frame()
+                    if payload is not None:
+                        yield (
+                            b"--frame\r\n"
+                            b"Content-Type: image/jpeg\r\n"
+                            + f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+                            + payload
+                            + b"\r\n"
+                        )
+                    time.sleep(0.2)
+
+            @app.get("/api/v1/demo/camera.mjpg")
+            async def demo_camera_preview() -> Any:
+                return StreamingResponse(
+                    camera_stream(),
+                    media_type="multipart/x-mixed-replace; boundary=frame",
+                    headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+                )
+
+        if self._enrollment_start_handler is not None:
+            @app.post("/api/v1/demo/enrollment")
+            async def start_demo_enrollment(request: Request) -> dict[str, Any]:
+                try:
+                    body = await request.json()
+                except Exception as exc:
+                    raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+                if not isinstance(body, dict):
+                    raise HTTPException(status_code=400, detail="JSON body must be an object")
+                required_shots = body.get("required_shots")
+                result = self._enrollment_start_handler(  # type: ignore[misc]
+                    str(body.get("name", "")), required_shots
+                )
+                raise_for_result(result)
+                return {**result, "request_id": request_id(request)}
+
+        if self._enrollment_cancel_handler is not None:
+            @app.post("/api/v1/demo/enrollment/cancel")
+            async def cancel_demo_enrollment(request: Request) -> dict[str, Any]:
+                result = self._enrollment_cancel_handler()  # type: ignore[misc]
+                raise_for_result(result)
+                return {**result, "request_id": request_id(request)}
 
         return app

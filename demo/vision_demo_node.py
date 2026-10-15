@@ -34,6 +34,10 @@ from marsdog_vision_interaction.core.object_detection_session import (
 from marsdog_vision_interaction.core.face_presence_event_tracker import (
     FacePresenceEventTracker,
 )
+from marsdog_vision_interaction.core.face_enrollment_manager import (
+    FaceEnrollmentManager,
+    set_storage_root,
+)
 from marsdog_vision_interaction.fusion.stereo_fusion import get_target_manager
 from marsdog_vision_interaction.messages.visual_event import normalize_visual_event
 from marsdog_vision_interaction.providers.base import BaseProvider
@@ -228,7 +232,7 @@ class _ObjectTargetTracker:
 
 
 class VisionDemoNode(Node):
-    """Serve only the object and human-target functions listed in the demo."""
+    """Serve the focused object, human-target, and face demo APIs."""
 
     def __init__(self, config_path: str | Path) -> None:
         super().__init__("vision_demo")
@@ -239,6 +243,13 @@ class VisionDemoNode(Node):
         if not isinstance(vision_runtime, dict):
             vision_runtime = {}
         self._vision_is_mock = vision_cfg.get("type") == "mock"
+        storage_config = self._config.get("storage", {})
+        storage_root = storage_config.get("root", "data") if isinstance(storage_config, dict) else "data"
+        set_storage_root(storage_root)
+        enrollment_config = self._config.get("face_enrollment", {})
+        self._enrollment = FaceEnrollmentManager(
+            enrollment_config if isinstance(enrollment_config, dict) else {}
+        )
         self._target_manager = get_target_manager()
         self._target_manager.configure(
             horizontal_fov_deg=float(vision_runtime.get("horizontal_fov_deg", 69.0))
@@ -251,6 +262,7 @@ class VisionDemoNode(Node):
         )
 
         self._state_lock = threading.RLock()
+        self._enrollment_lock = threading.RLock()
         self._object_inference_lock = threading.Lock()
         self._latest_frame: np.ndarray | None = None
         self._latest_camera_stamp = 0.0
@@ -259,15 +271,28 @@ class VisionDemoNode(Node):
         self._visual_sequence = 0
         self._visual_snapshot: dict[str, Any] = {}
         self._visual_snapshot_monotonic = 0.0
+        self._latest_enrollment_event: dict[str, Any] = {
+            "ok": True,
+            "status": "idle",
+            "step": 0,
+            "total_steps": 0,
+            "done": False,
+        }
+        self._latest_enrollment_event_monotonic = 0.0
+        self._last_enrollment_frame_monotonic = 0.0
+        self._face_sync_error = ""
         self._object_sequence = 0
 
         self._camera_group = MutuallyExclusiveCallbackGroup()
         self._visual_group = MutuallyExclusiveCallbackGroup()
         self._object_group = MutuallyExclusiveCallbackGroup()
         self._service_group = MutuallyExclusiveCallbackGroup()
+        self._enrollment_group = MutuallyExclusiveCallbackGroup()
 
         self._providers: dict[str, BaseProvider] = {}
         self._init_providers(providers, vision_cfg, vision_runtime)
+        self._wire_face_enrollment()
+        self._sync_face_registry()
 
         topics = self._config.get("topics", {})
         self._camera_topic = str(topics.get("camera_image", "/camera/camera/color/image_raw"))
@@ -275,6 +300,9 @@ class VisionDemoNode(Node):
         self._object_topic = str(topics.get(
             "object_detections", "/perception/vision/object_detections"
         ))
+        self._enrollment_topic = str(
+            topics.get("enrollment_event", "/perception/vision/enrollment_event")
+        )
         self._service_name = str(topics.get("vision_task", "/perception/vision/task"))
         self._camera_stale_timeout_sec = max(
             0.1, float(topics.get("camera_stale_timeout_sec", 0.5))
@@ -324,6 +352,9 @@ class VisionDemoNode(Node):
 
         self._visual_pub = self.create_publisher(String, self._visual_topic, _VISUAL_QOS)
         self._object_pub = self.create_publisher(String, self._object_topic, _VISUAL_QOS)
+        self._enrollment_pub = self.create_publisher(
+            String, self._enrollment_topic, _VISUAL_QOS
+        )
         self._camera_sub = self.create_subscription(
             Image,
             self._camera_topic,
@@ -349,10 +380,20 @@ class VisionDemoNode(Node):
             self._poll_objects,
             callback_group=self._object_group,
         )
+        self._enrollment_timer = self.create_timer(
+            0.1,
+            self._process_enrollment_frame,
+            callback_group=self._enrollment_group,
+        )
+        self._face_api: Any = None
+        self._face_api_status: dict[str, Any] = {"enabled": False, "ready": False}
+        self._init_face_api()
         self.get_logger().info(
             f"Vision demo ready: camera={self._camera_topic} "
             f"visual={self._visual_topic} objects={self._object_topic} "
-            f"service={self._service_name} mock={self._vision_is_mock}"
+            f"service={self._service_name} enrollment={self._enrollment_topic} "
+            f"face_api={self._face_api_status.get('address', 'disabled')} "
+            f"mock={self._vision_is_mock}"
         )
 
     def _init_providers(
@@ -364,12 +405,9 @@ class VisionDemoNode(Node):
         if vision_cfg.get("enabled", True):
             provider_config = copy.deepcopy(vision_runtime)
             provider_config.update({
-                "face_detect_model": "",
-                "face_recogn_model": "",
                 "hand_landmark_model": "",
                 "hand_detect_model": "",
                 "show_all_detections": False,
-                "face_tracking": {"use_bytetrack": False},
             })
             if vision_cfg.get("type", "observation") == "mock":
                 from marsdog_vision_interaction.providers.mock_vision import MockVisionProvider
@@ -381,7 +419,6 @@ class VisionDemoNode(Node):
                 )
 
                 vision = VisionObservationProvider(provider_config)
-                vision.task_face_enabled = False
                 vision.task_hand_enabled = False
             vision.start()
             self._providers["vision"] = vision
@@ -389,6 +426,31 @@ class VisionDemoNode(Node):
                 self.get_logger().error(
                     "Human pose provider is unavailable; the demo will publish "
                     "empty human observations until its configured pose model loads."
+                )
+
+        face_config = providers.get("face_recognition", {})
+        if isinstance(face_config, dict) and face_config.get("enabled", True):
+            config = copy.deepcopy(face_config.get("config", {}))
+            if not isinstance(config, dict):
+                config = {}
+            if face_config.get("type") == "mock":
+                from marsdog_vision_interaction.providers.mock_face_recognition import (
+                    MockFaceRecognitionProvider,
+                )
+
+                recognizer: BaseProvider = MockFaceRecognitionProvider(config)
+            else:
+                from marsdog_vision_interaction.providers.face_recognition import (
+                    FaceRecognitionProvider,
+                )
+
+                recognizer = FaceRecognitionProvider(config)
+            recognizer.start()
+            self._providers["face_recognition"] = recognizer
+            if not recognizer.is_available():
+                self.get_logger().error(
+                    "Face recognition task provider is unavailable: "
+                    f"{getattr(recognizer, 'model_error', '')}"
                 )
 
         object_cfg = providers.get("object", {})
@@ -405,6 +467,337 @@ class VisionDemoNode(Node):
                 self.get_logger().error(
                     f"Object detector is unavailable: {detector.last_error}"
                 )
+
+    def _wire_face_enrollment(self) -> None:
+        vision = self._providers.get("vision")
+        detector = getattr(vision, "_face_detector", None)
+        if detector is not None:
+            self._enrollment.set_face_detector(detector)
+
+    def _run_with_shared_face_models(self, operation: Any) -> Any:
+        vision = self._providers.get("vision")
+        runner = getattr(vision, "run_inference_exclusive", None)
+        if callable(runner):
+            return runner(operation)
+        return operation()
+
+    def _sync_face_registry(self) -> bool:
+        """Rebuild face templates from the configured local sample directory."""
+        with self._enrollment_lock:
+            vision = self._providers.get("vision")
+            if vision is not None and hasattr(vision, "sync_enrolled_to_throttle"):
+                try:
+                    self._run_with_shared_face_models(
+                        vision.sync_enrolled_to_throttle  # type: ignore[attr-defined]
+                    )
+                except Exception as exc:
+                    self._face_sync_error = str(exc)
+                    self.get_logger().error(f"Vision face template sync failed: {exc}")
+                    return False
+
+            recognizer = self._providers.get("face_recognition")
+            if recognizer is None or not hasattr(recognizer, "enroll"):
+                self._face_sync_error = ""
+                return vision is not None
+            try:
+                import cv2
+
+                clear = getattr(recognizer, "clear_enrolled", None)
+                if callable(clear):
+                    clear()
+                for name in self._enrollment.list_enrolled_faces():
+                    for path in self._enrollment.get_face_paths(name):
+                        image = cv2.imread(path)
+                        if image is not None:
+                            result = recognizer.enroll(image, name)  # type: ignore[attr-defined]
+                            if isinstance(result, dict) and not result.get("success", False):
+                                raise RuntimeError(
+                                    f"could not build template for {name} from {path}"
+                                )
+                self._face_sync_error = ""
+                return True
+            except Exception as exc:
+                self._face_sync_error = str(exc)
+                self.get_logger().error(f"Face registry sync failed: {exc}")
+                return False
+
+    def _init_face_api(self) -> None:
+        config = self._config.get("face_api", {})
+        if not isinstance(config, dict):
+            config = {}
+        enabled = bool(config.get("enabled", False))
+        self._face_api_status = {"enabled": enabled, "ready": False}
+        if not enabled:
+            return
+        try:
+            from marsdog_vision_interaction.api import FaceApiServer
+
+            self._face_api = FaceApiServer(
+                config,
+                self._enroll_uploaded_face_for_api,
+                self._list_faces_for_api,
+                self._list_face_samples_for_api,
+                self._get_face_sample_for_api,
+                self._replace_face_sample_for_api,
+                self._delete_face_sample_for_api,
+                demo_status_handler=self._face_demo_status,
+                camera_frame_handler=self._face_preview_frame,
+                enrollment_start_handler=self._start_face_enrollment,
+                enrollment_cancel_handler=self._cancel_face_enrollment,
+            )
+            ready = self._face_api.start()
+            self._face_api_status = {
+                "enabled": True,
+                "ready": ready,
+                "address": self._face_api.address,
+                "page": self._face_api.address,
+                "docs": f"{self._face_api.address}/docs",
+            }
+        except Exception as exc:
+            self._face_api = None
+            self._face_api_status = {
+                "enabled": True,
+                "ready": False,
+                "error": str(exc),
+            }
+            self.get_logger().error(f"Face API unavailable: {exc}")
+
+    def _enroll_uploaded_face_for_api(
+        self,
+        name: str,
+        image_bytes: bytes,
+    ) -> dict[str, Any]:
+        with self._enrollment_lock:
+            result = self._run_with_shared_face_models(
+                lambda: self._enrollment.enroll_face_from_image(name, image_bytes)
+            )
+            if result.get("ok"):
+                self._sync_face_registry()
+            return result
+
+    def _list_faces_for_api(self) -> dict[str, Any]:
+        with self._enrollment_lock:
+            return self._enrollment.list_face_records()
+
+    def _list_face_samples_for_api(self, name: str) -> dict[str, Any]:
+        with self._enrollment_lock:
+            return self._enrollment.list_face_samples(name)
+
+    def _get_face_sample_for_api(
+        self,
+        name: str,
+        sample_id: int,
+    ) -> dict[str, Any]:
+        with self._enrollment_lock:
+            return self._enrollment.get_face_sample(name, sample_id)
+
+    def _replace_face_sample_for_api(
+        self,
+        name: str,
+        sample_id: int,
+        image_bytes: bytes,
+    ) -> dict[str, Any]:
+        with self._enrollment_lock:
+            result = self._run_with_shared_face_models(
+                lambda: self._enrollment.replace_face_sample(
+                    name, sample_id, image_bytes
+                )
+            )
+            if result.get("ok"):
+                self._sync_face_registry()
+            return result
+
+    def _delete_face_sample_for_api(
+        self,
+        name: str,
+        sample_id: int,
+    ) -> dict[str, Any]:
+        with self._enrollment_lock:
+            result = self._enrollment.delete_face_sample(name, sample_id)
+            if result.get("ok"):
+                self._sync_face_registry()
+            return result
+
+    def _publish_enrollment_event(self, result: dict[str, Any]) -> None:
+        with self._state_lock:
+            self._latest_enrollment_event = copy.deepcopy(result)
+            self._latest_enrollment_event_monotonic = time.monotonic()
+        message = String()
+        message.data = json.dumps(result, ensure_ascii=False)
+        self._enrollment_pub.publish(message)
+
+    def _start_face_enrollment(
+        self,
+        name: str,
+        required_shots: int | None = None,
+    ) -> dict[str, Any]:
+        with self._enrollment_lock:
+            result = self._enrollment.start_face(name, required_shots)
+            if result.get("ok"):
+                event = {
+                    **result,
+                    "status": "searching",
+                    "done": False,
+                }
+                self._publish_enrollment_event(event)
+            return result
+
+    def _cancel_face_enrollment(self) -> dict[str, Any]:
+        with self._enrollment_lock:
+            result = self._enrollment.cancel_face()
+            if result.get("ok"):
+                self._publish_enrollment_event({
+                    **result,
+                    "status": "cancelled",
+                    "done": False,
+                })
+            return result
+
+    def _process_enrollment_frame(self) -> None:
+        with self._enrollment_lock:
+            if self._enrollment.face_session is None:
+                return
+            frame, _, _, received, fresh = self._camera_snapshot()
+            if not fresh or frame is None:
+                return
+            with self._state_lock:
+                if received <= self._last_enrollment_frame_monotonic:
+                    return
+                self._last_enrollment_frame_monotonic = received
+            result = self._run_with_shared_face_models(
+                lambda: self._enrollment.process_face_frame(frame)
+            )
+            self._publish_enrollment_event(result)
+            if result.get("done"):
+                self._sync_face_registry()
+
+    def _face_preview_frame(self) -> np.ndarray | None:
+        frame, _, _, fresh = self._camera_state()
+        return frame if fresh and frame is not None else None
+
+    def _face_demo_status(self) -> dict[str, Any]:
+        frame, _, frame_id, received, fresh = self._camera_snapshot()
+        with self._state_lock:
+            visual = copy.deepcopy(self._visual_snapshot)
+            visual_at = self._visual_snapshot_monotonic
+            enrollment = copy.deepcopy(self._latest_enrollment_event)
+            enrollment_at = self._latest_enrollment_event_monotonic
+        now = time.monotonic()
+        camera_age = (now - received) * 1000.0 if received > 0.0 else None
+        visual_age = (now - visual_at) * 1000.0 if visual_at > 0.0 else None
+        enrollment_age = (
+            (now - enrollment_at) * 1000.0 if enrollment_at > 0.0 else None
+        )
+        with self._enrollment_lock:
+            enrollment_active = self._enrollment.face_session is not None
+            sync_error = self._face_sync_error
+
+        vision = self._providers.get("vision")
+        raw_model_status = getattr(vision, "face_model_status", {})
+        if not isinstance(raw_model_status, dict):
+            raw_model_status = {}
+        vision_cfg = self._config.get("providers", {}).get("vision", {})
+        vision_config = vision_cfg.get("config", {}) if isinstance(vision_cfg, dict) else {}
+        model_paths = {
+            "yunet": str(vision_config.get("face_detect_model", "")),
+            "sface": str(vision_config.get("face_recogn_model", "")),
+        } if isinstance(vision_config, dict) else {"yunet": "", "sface": ""}
+        models: dict[str, dict[str, Any]] = {}
+        for role, path in model_paths.items():
+            value = raw_model_status.get(role, {})
+            if not isinstance(value, dict):
+                value = {}
+            models[role] = {
+                "configured": bool(path),
+                "ready": bool(value.get("ready", False)),
+                "error": str(value.get("error", "")),
+            }
+            if path and role not in raw_model_status:
+                models[role]["error"] = "model status unavailable"
+
+        camera_available = bool(fresh and frame is not None)
+        return {
+            "ok": True,
+            "camera": {
+                "available": camera_available,
+                "age_ms": round(camera_age, 1) if camera_age is not None else None,
+                "stale_after_ms": round(self._camera_stale_timeout_sec * 1000.0),
+                "frame_id": frame_id,
+                "topic": self._camera_topic,
+            },
+            "recognition": {
+                "available": all(value["ready"] for value in models.values()),
+                "models": models,
+                "template_sync_error": sync_error,
+            },
+            "visual": {
+                "available": bool(
+                    camera_available
+                    and visual
+                    and visual_age is not None
+                    and visual_age <= self._camera_stale_timeout_sec * 1000.0
+                ),
+                "age_ms": round(visual_age, 1) if visual_age is not None else None,
+                "event": visual,
+            },
+            "enrollment": {
+                "event": enrollment,
+                "age_ms": round(enrollment_age, 1) if enrollment_age is not None else None,
+                "active": enrollment_active,
+            },
+            "face_api": copy.deepcopy(self._face_api_status),
+        }
+
+    def _crop_largest_face(self) -> np.ndarray | None:
+        frame, _, _, fresh = self._camera_state()
+        vision = self._providers.get("vision")
+        if (
+            not fresh
+            or frame is None
+            or vision is None
+            or not hasattr(vision, "get_observation")
+        ):
+            return None
+        observation = vision.get_observation()  # type: ignore[attr-defined]
+        faces = observation.get("faces", []) if isinstance(observation, dict) else []
+        if not isinstance(faces, list) or not faces:
+            return None
+        face = max(
+            (item for item in faces if isinstance(item, dict)),
+            key=lambda item: float(item.get("w", 0.0)) * float(item.get("h", 0.0)),
+            default=None,
+        )
+        if face is None:
+            return None
+        height, width = frame.shape[:2]
+        try:
+            x = float(face["x"])
+            y = float(face["y"])
+            face_width = float(face["w"])
+            face_height = float(face["h"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not all(math.isfinite(value) for value in (x, y, face_width, face_height)):
+            return None
+        x1 = max(0, int(x * width))
+        y1 = max(0, int(y * height))
+        x2 = min(width, int((x + face_width) * width))
+        y2 = min(height, int((y + face_height) * height))
+        return frame[y1:y2, x1:x2] if x2 > x1 and y2 > y1 else None
+
+    def _recognize_face_once(self) -> dict[str, Any]:
+        recognizer = self._providers.get("face_recognition")
+        if recognizer is None or not recognizer.is_available():
+            return {"ok": False, "error": "face recognizer unavailable"}
+        with self._enrollment_lock:
+            _, _, _, fresh = self._camera_state()
+            if not fresh:
+                return {"ok": False, "error": "camera frame unavailable or stale"}
+            try:
+                result = recognizer.recognize(self._crop_largest_face())  # type: ignore[attr-defined]
+            except Exception as exc:
+                return {"ok": False, "error": f"face recognition failed: {exc}"}
+        return {"ok": True, **(result if isinstance(result, dict) else {})}
 
     @staticmethod
     def _stamp(message: Image) -> float:
@@ -458,7 +851,9 @@ class VisionDemoNode(Node):
         if vision is not None and hasattr(vision, "process_frame"):
             vision.process_frame(frame, stamp=stamp, frame_id=frame_id)  # type: ignore[attr-defined]
 
-    def _camera_state(self) -> tuple[np.ndarray | None, float, str, bool]:
+    def _camera_snapshot(
+        self,
+    ) -> tuple[np.ndarray | None, float, str, float, bool]:
         with self._state_lock:
             frame = self._latest_frame
             stamp = self._latest_camera_stamp
@@ -472,6 +867,10 @@ class VisionDemoNode(Node):
                 and time.monotonic() - received <= self._camera_stale_timeout_sec
             )
         )
+        return frame, stamp, frame_id, received, fresh
+
+    def _camera_state(self) -> tuple[np.ndarray | None, float, str, bool]:
+        frame, stamp, frame_id, _, fresh = self._camera_snapshot()
         return frame, stamp, frame_id, fresh
 
     def _publish_visual(self) -> None:
@@ -922,6 +1321,16 @@ class VisionDemoNode(Node):
                     "lease_remaining_sec": None,
                 },
             }
+        if task_type == "recognize_face":
+            return self._recognize_face_once()
+        if task_type == "start_face_enrollment":
+            required_shots = params.get("required_shots")
+            return self._start_face_enrollment(
+                str(params.get("name", "")),
+                required_shots,
+            )
+        if task_type == "cancel_face_enrollment":
+            return self._cancel_face_enrollment()
         return {"ok": False, "error": f"unsupported task_type: {task_type}"}
 
     def _handle_task(self, request: Any, response: Any) -> Any:
@@ -951,6 +1360,12 @@ class VisionDemoNode(Node):
         return response
 
     def close(self) -> None:
+        with self._enrollment_lock:
+            if self._enrollment.face_session is not None:
+                self._enrollment.cancel_face()
+        if self._face_api is not None:
+            self._face_api.stop()
+            self._face_api = None
         before = self._object_stream.snapshot()
         if before.get("active"):
             with self._object_inference_lock:

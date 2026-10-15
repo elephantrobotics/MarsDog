@@ -112,8 +112,11 @@ ros2 launch marsdog_vision_interaction vision_debug.launch.py \
 
 - 跌倒用例必须在软垫上由辅助人员保护，采用受控的快速躺倒动作，禁止无保护真摔。
 - 仅启动视觉与 Viewer 时不会控制底盘；做全链路测试时应另行确认底盘安全措施。
-- Debug Web 和人脸 HTTP API 当前都不使用 Token。绑定 `0.0.0.0` 后，仅允许接入
-  可信隔离局域网；禁止把 8765、8092 端口暴露到互联网。
+- Debug Web 和人脸 HTTP API 当前都不使用 Token。共享 `config/vision.yaml` 默认将
+  Face API 绑定到 `0.0.0.0:8092`；demo 与完整视觉节点使用该配置都会开放此 API。
+  局域网客户端使用视觉设备 LAN IPv4 访问，并通过可信子网和主机防火墙限制来源。
+  Debug Web 则需单独设置 `web_host:=0.0.0.0` 才会开放远程访问。禁止把 8765、8092
+  端口暴露到互联网。
 - 人脸图片和 `face_registry.json` 是本地生物识别数据。测试结束时是否删除由测试
   负责人确认，不得上传到 Git、工单附件或公共网盘。
 - `/perception/visual_event` 是默认 10 Hz 的状态流。同一事件在状态保持期间会重复，
@@ -328,8 +331,11 @@ fail-closed 原则。
 
 ### 5.4 人脸样本 CRUD
 
-Swagger：`http://127.0.0.1:8092/docs`。当前不需要 Authorization、Token 或 URL
-参数。建议用专门测试身份和可删除的测试图片执行，避免误删正式主人数据。
+本机 Swagger 地址为 `http://127.0.0.1:8092/docs`。共享的 `config/vision.yaml` 将
+API 绑定到 `0.0.0.0:8092`；同一 LAN 的其他设备应使用
+`http://<视觉设备LAN-IPv4>:8092/docs`。接口没有 Authorization、Token 或 URL 参数；
+只允许可信子网访问，并设置主机防火墙。建议用专门测试身份和可删除的测试图片执行，
+避免误删正式主人数据。
 
 ```bash
 # 健康检查和人员汇总

@@ -29,7 +29,7 @@
 | 调试发布 | `/perception/vision/gesture_debug` | `std_msgs/msg/String` JSON | 精确动作名、候选分数和时序命中，仅供调试 |
 | 发布 | `/perception/vision/enrollment_event` | `std_msgs/msg/String` JSON | RELIABLE, KEEP_LAST 10 |
 | 提供 | `/perception/vision/task` | `marsdog_vision_interaction/srv/VisionTask` | 人物/物体查询和人脸管理 |
-| 提供 | `/api/v1/faces...` | FastAPI multipart/JSON/JPEG | 固定5个人、每人5张的样本级增删改查；默认 `127.0.0.1:8092` |
+| 提供 | `/api/v1/faces...` | FastAPI multipart/JSON/JPEG | 固定5个人、每人5张的样本级增删改查；共享配置绑定 `0.0.0.0:8092` |
 | Viewer 发布 | `/perception/vision/debug_image` | `sensor_msgs/msg/Image` | 调试用途 |
 
 ## 3. 当前相机与坐标约定
@@ -127,7 +127,10 @@ Service 定义见 `srv/VisionTask.srv`。当前任务：
 `family_member_3`、`family_member_4`。每个身份最多5张 JPG 模板。FastAPI 的
 Swagger 页面为 `/docs`，接口形状与声纹样本 CRUD 对齐：POST 新增、GET 列表/单条/
 图片、PUT 原位替换、DELETE 单条删除。当前 HTTP 接口暂不鉴权，远程监听仅允许
-用于可信隔离局域网。新增/替换会对同一身份的规范化 JPG 精确去重，重复返回
+用于可信隔离局域网。`config/vision.yaml` 同时供 demo 和完整视觉节点使用，二者
+使用该配置都会绑定所有接口；本机用 `127.0.0.1:8092`，同 LAN 设备用视觉设备的
+LAN IPv4 和端口 8092 访问，并应通过可信子网与主机防火墙限制来源。新增/替换会对
+同一身份的规范化 JPG 精确去重，重复返回
 `face_sample_duplicate` 和已有样本编号；每次请求通过 `X-Request-ID` 与服务端日志关联。
 自由姓名旧数据不会自动删除，但不再载入运行时识别索引。
 

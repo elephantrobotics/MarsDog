@@ -508,7 +508,9 @@ float64 latency_ms
 
 ### 8.3 人脸样本 FastAPI
 
-正式节点默认在 `127.0.0.1:8092` 提供 `/docs` 和以下管理接口。身份是固定枚举
+正式节点和独立 demo 共用 `config/vision.yaml`。该文件将 Face API 绑定到
+`0.0.0.0:8092`；本机可访问 `http://127.0.0.1:8092/docs`，同 LAN 客户端使用
+`http://<视觉设备LAN-IPv4>:8092/docs`。demo 的管理页面位于 `/`。身份是固定枚举
 `owner/family_member_1～4`，不是自由姓名；每个身份最多5张，`sample_id` 只能为
 1～5。
 
@@ -540,8 +542,8 @@ POST/PUT 先完成图片解码、人脸检测、质量门控和裁剪，成功�
 `detail` 的自然语言文本。
 
 当前 `/health` 和全部人脸 CRUD 接口暂不鉴权，不定义 token、Cookie 或认证请求头。
-绑定非回环地址时必须部署在可信隔离局域网；推荐 SSH 转发，不得将设备本地人脸
-图片和 `face_registry.json` 暴露到不可信网络。
+共享配置会使 demo 和正式节点都在所有接口提供 Face API；必须用可信子网和主机防火墙
+限制来源，不得将设备本地人脸图片和 `face_registry.json` 暴露到不可信网络。
 
 | 状态码 | 含义 |
 |---:|---|

@@ -60,18 +60,22 @@ uv run marsdog-vision-interaction \
 
 期望日志包含 `5/5 models loaded` 和
 `Face FastAPI ready: http://127.0.0.1:8092/docs`；少模型时节点仍可降级运行，
-但对应字段为空。人脸接口固定为主人和家人1～4五个身份、每人最多5张；本机打开
-`http://127.0.0.1:8092/docs` 可做样本级新增、查询、替换、删除和图片查看。
+但对应字段为空。日志地址用于本机访问。仓库的 `config/vision.yaml` 将 Face API
+绑定在 `0.0.0.0:8092`，本机打开 `http://127.0.0.1:8092/docs` 可做样本级 CRUD；
+同一局域网的其他设备使用 `http://<视觉设备LAN-IPv4>:8092/docs`。人脸接口固定为
+主人和家人1～4五个身份、每人最多5张图片。
 
-需要局域网管理时：
+使用未配置 LAN 监听地址的自定义 YAML 时，可显式覆盖 host：
 
 ```bash
 ros2 launch marsdog_vision_interaction vision.launch.py \
   face_api_host:=0.0.0.0
 ```
 
-当前所有人脸 CRUD 接口暂不鉴权。仅在可信隔离局域网绑定远程地址，并优先使用
-`ssh -L 8092:127.0.0.1:8092`，避免暴露生物数据管理端口。
+当前所有人脸 CRUD 接口暂不鉴权。`config/vision.yaml` 同时被独立 demo 和完整节点
+使用，因此使用该文件启动任一进程都会将 API 暴露到所有可达接口；只允许可信子网访问，
+并设置主机防火墙规则。Face API 日志可能显示 localhost；远程设备须使用设备 LAN IPv4。
+不要把生物数据管理端口暴露到不可信网络。
 
 统一视觉调试（同时启动正式视觉节点和 Viewer）：
 

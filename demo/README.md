@@ -1,9 +1,9 @@
 # Standalone vision demo
 
-This process replaces the full `vision_interaction` node for the object and
-human-target APIs listed below. It does not start the full node or camera
-driver. A real camera driver must be started separately and publish the image
-topic configured in `config/vision.yaml`.
+This process replaces the full `vision_interaction` node for the focused
+object, human-target, and face-recognition APIs listed below. It does not start
+the full node or camera driver. A real camera driver must be started separately
+and publish the image topic configured in `config/vision.yaml`.
 
 ## Start
 
@@ -24,8 +24,10 @@ different vision YAML, pass `--config PATH` to the launcher.
 - Service: `/perception/vision/task` (`marsdog_vision_interaction/srv/VisionTask`)
 - Human boxes: `/perception/visual_event` (`std_msgs/msg/String`, JSON)
 - Object results: `/perception/vision/object_detections` (`std_msgs/msg/String`, schema v2 JSON)
+- Enrollment progress: `/perception/vision/enrollment_event` (`std_msgs/msg/String`, JSON)
 - Tasks: `detect_objects`, `set_object_detection`,
-  `get_object_detection_state`, `query_targets`, and `locate_person_once`.
+  `get_object_detection_state`, `query_targets`, `locate_person_once`,
+  `recognize_face`, `start_face_enrollment`, and `cancel_face_enrollment`.
 
 The demo adds an optional `event_lifecycle[]` array to each
 `/perception/visual_event` JSON snapshot. It maps a confirmed `owner` to
@@ -51,6 +53,29 @@ string array remains unchanged.
 Object detection sessions default to 2 Hz, are limited to 5 Hz, and use the
 configured lease defaults (normally 3 seconds). `query_targets` returns the
 same full `target_id` and normalized bbox used by `locate_person_once`.
+
+When `face_api.enabled` is true, the Face API binds to all interfaces in the
+shipped `config/vision.yaml` (`0.0.0.0:8092`). On the demo machine, open
+`http://127.0.0.1:8092/`. From another device on the same LAN, open
+`http://<demo-machine-LAN-IPv4>:8092/`, replacing the placeholder with the
+demo machine's IPv4 address on that LAN. The page provides a live camera
+preview, current face identity state, continuous camera enrollment, and sample
+photo add/preview/replace/delete controls. The existing `/docs` page and
+`/api/v1/faces/*` sample API remain available at the same origin.
+
+The Face API has no authentication. Binding `0.0.0.0` makes photo upload,
+preview, replacement, deletion, and the OpenAPI UI reachable on every interface
+allowed by the machine's network and firewall. Limit access to a trusted subnet
+and configure the host firewall accordingly. `config/vision.yaml` is shared by
+the standalone demo and full vision node, so starting either process with this
+config exposes the same API on the LAN. The Face API log may print a localhost
+URL; remote devices must use the demo machine's LAN IPv4 instead.
+
+The demo reads and writes samples plus `face_registry.json` under the configured
+`storage.root` data directory. It uses the configured YuNet and SFace models;
+if either model is unavailable, the page shows the component error and the demo
+does not fabricate identity results. Continuous enrollment requires a fresh
+camera stream; a stale or absent stream is reported in the page status.
 
 ## Mock verification
 
