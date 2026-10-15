@@ -31,6 +31,9 @@ except ImportError as exc:  # pragma: no cover - requires sourced ROS overlay
 from marsdog_vision_interaction.core.object_detection_session import (
     ObjectDetectionSessionManager,
 )
+from marsdog_vision_interaction.core.face_presence_event_tracker import (
+    FacePresenceEventTracker,
+)
 from marsdog_vision_interaction.fusion.stereo_fusion import get_target_manager
 from marsdog_vision_interaction.messages.visual_event import normalize_visual_event
 from marsdog_vision_interaction.providers.base import BaseProvider
@@ -285,6 +288,9 @@ class VisionDemoNode(Node):
         self._observation_rate_hz = max(
             0.1, float(topics.get("observation_rate_hz", 10.0))
         )
+        self._face_presence_events = FacePresenceEventTracker(
+            self._config.get("face_presence_events", {})
+        )
 
         object_cfg = providers.get("object", {}).get("config", {})
         if not isinstance(object_cfg, dict):
@@ -480,7 +486,35 @@ class VisionDemoNode(Node):
             except Exception as exc:
                 self.get_logger().error(f"Human observation failed: {exc}")
 
-        event = normalize_visual_event(raw)
+        face_presence_faces: list[dict[str, Any]] = []
+        if camera_fresh:
+            if self._vision_is_mock:
+                raw_faces = raw.get("faces", [])
+                if isinstance(raw_faces, list):
+                    face_presence_faces = raw_faces
+            else:
+                get_presence_snapshot = getattr(
+                    vision, "get_face_presence_snapshot", None
+                )
+                if callable(get_presence_snapshot):
+                    try:
+                        observations, observed_at = get_presence_snapshot()
+                        observation_age = time.monotonic() - float(observed_at)
+                        if (
+                            isinstance(observations, list)
+                            and 0.0 <= observation_age <= self._camera_stale_timeout_sec
+                        ):
+                            face_presence_faces = observations
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        self.get_logger().warning(
+                            f"Face presence snapshot unavailable: {exc}"
+                        )
+
+        visual_payload = dict(raw)
+        visual_payload["event_lifecycle"] = self._face_presence_events.update(
+            face_presence_faces
+        )
+        event = normalize_visual_event(visual_payload)
         target_snapshot = self._target_manager.get_snapshot()
         vision_epoch = str(target_snapshot.get("vision_epoch", self._vision_epoch))
         candidates = [

@@ -243,6 +243,8 @@ class VisionObservationProvider(BaseProvider):
         self._pending_frame_stamp: float = 0.0
         self._pending_frame_id: str = "camera_link"
         self._cached_observation: dict[str, Any] = {}
+        self._cached_face_presence_observations: list[dict[str, Any]] = []
+        self._cached_face_presence_updated_monotonic = 0.0
         self._inference_lock = threading.RLock()
         self._worker_stop = False
         self._worker: threading.Thread | None = None
@@ -823,6 +825,8 @@ class VisionObservationProvider(BaseProvider):
             self._latest_frame = None
             self._pending_frame = None
             self._cached_observation = {}
+            self._cached_face_presence_observations = []
+            self._cached_face_presence_updated_monotonic = 0.0
         self._received_frame_count = 0
         self._inference_candidate_count = 0
         self._inferred_frame_count = 0
@@ -907,6 +911,9 @@ class VisionObservationProvider(BaseProvider):
             try:
                 with self._inference_lock:
                     obs = self._process_frame_impl(frame)
+                face_presence_observations = obs.pop(
+                    "_face_presence_observations", []
+                )
                 obs["header"] = {
                     "stamp": float(frame_stamp or time.time()),
                     "frame_id": str(frame_id or "camera_link"),
@@ -914,6 +921,12 @@ class VisionObservationProvider(BaseProvider):
                 with self._lock:
                     self._latest_frame = frame
                     self._cached_observation = obs
+                    self._cached_face_presence_observations = (
+                        face_presence_observations
+                        if isinstance(face_presence_observations, list)
+                        else []
+                    )
+                    self._cached_face_presence_updated_monotonic = time.monotonic()
                     self._inferred_frame_count += 1
             except Exception as exc:
                 logger.error("Frame processing error: %s", exc, exc_info=True)
@@ -1261,6 +1274,15 @@ class VisionObservationProvider(BaseProvider):
             "tracked_objects": obs.get("tracked_objects", []),
             "_gesture_diagnostics": action_result,
         }
+        result["_face_presence_observations"] = [
+            {
+                "track_id": face.get("track_id", -1),
+                "recognized_user": str(face.get("recognized_user", "")),
+                "identity_state": str(face.get("identity_state", "unverified")),
+            }
+            for face in obs.get("faces", [])
+            if isinstance(face, dict)
+        ]
         if self._show_all_detections:
             result["debug_humans"] = self._debug_human_overlays(
                 obs.get("humans", []),
@@ -1479,6 +1501,21 @@ class VisionObservationProvider(BaseProvider):
             if self._cached_observation:
                 return copy.deepcopy(self._cached_observation)
         return {}
+
+    def get_face_presence_snapshot(
+        self,
+    ) -> tuple[list[dict[str, Any]], float]:
+        """Return all face identities from the latest successful inference.
+
+        The completion time uses the process monotonic clock so consumers can
+        reject a cached result after inference stalls, independently from the
+        public single-face ``faces[]`` view and debug overlay settings.
+        """
+        with self._lock:
+            return (
+                copy.deepcopy(self._cached_face_presence_observations),
+                self._cached_face_presence_updated_monotonic,
+            )
 
     def check_person(self) -> dict[str, Any]:
         obs = self.get_observation()

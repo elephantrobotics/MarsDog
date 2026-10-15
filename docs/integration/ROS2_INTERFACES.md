@@ -159,6 +159,22 @@ Joy/Excite/Calm 任一触发时发布 `EVT_VISION_STRANGER_FRIEND`。Alert 优�
 细分事件替换通用事件。状态默认 2.5 秒过期；缺失、过期、非法或仅
 Curious 触发时回退 `EVT_VISION_STRANGER`。Vision 不订阅 `/internal_need/state`。
 
+独立 demo 还会在同一 JSON 中附带可选 `event_lifecycle[]`，完整视觉节点不发布此字段。
+每项为 `{"event_name":"EVT_VISION_MASTER","state":"ENTER","track_id":12}`；
+事件名按确认身份映射：已确认 `owner` → `EVT_VISION_MASTER`，已确认
+`family_member_1`～`family_member_4` → `EVT_VISION_FAMILY_PRESENT`，
+`confirmed_unknown` → `EVT_VISION_STRANGER`。候选/未验证身份及非正 track ID 被忽略。
+生命周期使用 provider 最近一次成功推理中的全量人脸，并要求该快照单调年龄不超过
+`camera_stale_timeout_sec`；`faces[]` 仍保留原来的主目标视图，`debug_faces[]` 是否开启
+不影响业务事件。多人时，生命周期项的 track ID 不一定出现在同包 `faces[]` 中。
+
+demo 的默认计时为 `T_enter=1.0s`、`T_exit=2.0s`、`T_retrigger=3.0s`，使用单调时钟，
+配置位置为 `face_presence_events`。连续确认满 `T_enter` 发一次 `ENTER`，活跃状态和
+退出宽限期内每个约10 Hz快照发 `HOLD`，连续未识别满 `T_exit` 发一次 `EXIT`；退出后
+同一 `(event_name,track_id)` 还须满足3秒冷却和新一轮1秒稳定确认才可再次 ENTER。
+`ENTER` 可触发一次直驱行为；`HOLD` 不应重复触发直驱行为；`EXIT` 结束在场状态。
+置信度沿用各视觉算法任务现有阈值。旧 `events[]` 仍为原字符串数组，内容与重复语义不变。
+
 ### 3.1 `/perception/vision/object_detections`
 
 正式配置以 `inference_rate_hz=0` 启动，不运行全天候固定物体流。人物处于

@@ -258,6 +258,55 @@ Vision 不订阅 `/internal_need/state`。情绪系统不得把
 `EVT_VISION_STRANGER_ALERT/FRIEND` 反向配置为情绪增量输入，避免 10 Hz
 视觉状态流形成 Vision → Emotion → Vision 正反馈。
 
+### 4.11 独立 demo 的人脸在场生命周期
+
+独立 `demo/vision_demo_node.py` 在 `/perception/visual_event` 的 schema v1 JSON
+中额外发布可选顶层 `event_lifecycle[]`。完整视觉节点目前不发布该字段。新字段与
+现有 `events[]` 并存，`events[]` 仍保持原有字符串数组及重复语义，不会被该功能改写。
+
+每项仅包含事件名、生命周期状态和人脸几何轨迹 ID：
+
+```json
+{"event_name":"EVT_VISION_MASTER","state":"ENTER","track_id":12}
+```
+
+| 确认的人脸身份 | `event_name` |
+|---|---|
+| `owner` 且 `identity_state=confirmed_known` | `EVT_VISION_MASTER` |
+| `family_member_1`～`family_member_4` 且 `identity_state=confirmed_known` | `EVT_VISION_FAMILY_PRESENT` |
+| `identity_state=confirmed_unknown` | `EVT_VISION_STRANGER` |
+
+只有已确认身份且 `track_id > 0` 才参与生命周期；候选或未验证身份不产生事件。置信度
+沿用人脸算法已有门限，不另设阈值。各 `(event_name, track_id)` 独立计时；track ID
+表示几何轨迹，不代表永久身份。生命周期读取 provider 最近一次成功推理中的全量人脸，
+不依赖只含主目标的 `faces[]` 视图或可选 `debug_faces[]`；因此多人场景中的事件
+`track_id` 不一定出现在该包的公开 `faces[]` 中。只有相机新鲜且推理快照的单调年龄不
+超过 `camera_stale_timeout_sec` 时，快照才参与事件计算；推理失败或缓存过期会按人脸缺失
+进入 `T_exit` 宽限。
+
+demo 默认使用单调时钟，可在 `config/vision.yaml` 的 `face_presence_events` 中配置；
+非法值回退推荐初始值：
+
+| 参数 | 含义 | 初始值 |
+|---|---|---:|
+| `t_enter_sec` (`T_enter`) | 连续稳定识别达到该时间后成立 | 1.0 s |
+| `t_exit_sec` (`T_exit`) | 连续未识别达到该时间后结束 | 2.0 s |
+| `t_retrigger_sec` (`T_retrigger`) | `EXIT` 后同一键再次允许 `ENTER` 的最短间隔 | 3.0 s |
+| `confidence` | 成立所需最低置信度 | 沿用各视觉算法任务自身阈值 |
+| `HOLD` | 目标持续稳定存在 | 每个约 10 Hz 快照发送，不重复触发直驱 |
+
+以上时间配置的合法范围为 `(0,60]` 秒。确认身份连续成立满 `T_enter` 后输出一次
+`ENTER`；活跃期间每个约 10 Hz 状态快照输出 `HOLD`，包括首次未识别后的 `T_exit`
+宽限期。连续未识别满 `T_exit` 后输出一次 `EXIT`；宽限期结束前恢复同一身份和轨迹会
+续接原生命周期。`EXIT` 后，同一键至少等待 `T_retrigger`，且新一轮连续确认满足
+`T_enter`，才可再次输出 `ENTER`。冷却期间重新出现会从本轮重新开始 `T_enter` 计时。
+
+消费者可用 `ENTER` 触发一次直驱行为；`HOLD` 表示持续存在，不应重复触发直驱行为，
+但可按生命系统自身规则影响情绪；`EXIT` 用于结束在场状态。`event_lifecycle[]` 是
+schema v1 的可选附加字段，消费者应忽略不认识的字段；其发布不改变旧生产者的
+`events[]` 处理方式。手势、跌倒等瞬时动作仍按各自既有规则发布，不在本字段中新增
+`TRIGGER` 项。
+
 ## 5. `/perception/vision/gesture_debug`
 
 该 Topic 仅供 Viewer、标定和规则回归使用，不属于行为树稳定输入。根字段包括：

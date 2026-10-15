@@ -40,6 +40,13 @@ face_enrollment:
     # Default only; explicit API/Service requests override, maximum 5.
     required_shots: 3
 
+# Standalone demo face-presence lifecycle events. Durations outside (0, 60]
+# seconds or invalid values fall back to these defaults.
+face_presence_events:
+  t_enter_sec: 1.0
+  t_exit_sec: 2.0
+  t_retrigger_sec: 3.0
+
 topics:
   camera_image: /camera/camera/color/image_raw
   visual_event: /perception/visual_event

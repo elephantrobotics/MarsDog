@@ -76,6 +76,32 @@ topics:
     semantics: state_snapshot
     snapshot_identity: [vision_epoch, sequence, snapshot_id]
     source_frame: header
+    standalone_demo_face_presence_lifecycle:
+      field: event_lifecycle
+      optional: true
+      schema_version: 1
+      item_fields: [event_name, state, track_id]
+      states: [ENTER, HOLD, EXIT]
+      event_identity: [event_name, track_id]
+      confirmed_identity_mapping:
+        owner: EVT_VISION_MASTER
+        family_member_1_to_4: EVT_VISION_FAMILY_PRESENT
+        confirmed_unknown: EVT_VISION_STRANGER
+      timing_sec:
+        t_enter: 1.0
+        t_exit: 2.0
+        t_retrigger: 3.0
+      hold_cadence: every_visual_snapshot_while_active_including_exit_grace
+      confidence_policy: reuse_face_algorithm_threshold
+      input_snapshot: all_faces_from_latest_successful_inference
+      input_snapshot_freshness_sec: camera_stale_timeout_sec
+      public_faces_view: unchanged_primary_target_projection
+      debug_faces_required: false
+      consumers:
+        ENTER: may_trigger_one_shot_direct_drive
+        HOLD: do_not_repeat_direct_drive
+        EXIT: close_presence_state
+      legacy_events_array: unchanged_string_list
     target_contract:
       human_candidates: all_visible_human_tracks_up_to_5
       stable_key: [vision_epoch, target_id]

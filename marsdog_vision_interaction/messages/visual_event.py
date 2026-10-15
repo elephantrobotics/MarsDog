@@ -9,9 +9,20 @@ from marsdog_vision_interaction.utils.time_utils import now_stamp
 from marsdog_vision_interaction.providers.pose_backends.contract import (
     normalize_keypoint_format,
 )
+from marsdog_vision_interaction.messages.visual_event_types import (
+    EVT_VISION_FAMILY_PRESENT,
+    EVT_VISION_MASTER,
+    EVT_VISION_STRANGER,
+)
 
 
 SCHEMA_VERSION = 1
+_LIFECYCLE_EVENT_NAMES = {
+    EVT_VISION_MASTER,
+    EVT_VISION_FAMILY_PRESENT,
+    EVT_VISION_STRANGER,
+}
+_LIFECYCLE_STATES = {"ENTER", "HOLD", "EXIT"}
 
 _HELD_OBJECT = {
     "state": "inactive",
@@ -330,6 +341,31 @@ def normalize_visual_event(data: Any) -> dict[str, Any]:
     ]
     if isinstance(data.get("events"), list):
         event["events"] = [str(item) for item in data["events"] if item]
+    if "event_lifecycle" in data:
+        raw_lifecycle = data.get("event_lifecycle")
+        event["event_lifecycle"] = []
+        if isinstance(raw_lifecycle, list):
+            for item in raw_lifecycle:
+                if not isinstance(item, dict):
+                    continue
+                event_name = item.get("event_name")
+                state = item.get("state")
+                track_id = item.get("track_id")
+                if (
+                    not isinstance(event_name, str)
+                    or event_name not in _LIFECYCLE_EVENT_NAMES
+                    or not isinstance(state, str)
+                    or state not in _LIFECYCLE_STATES
+                    or isinstance(track_id, bool)
+                    or not isinstance(track_id, int)
+                    or track_id <= 0
+                ):
+                    continue
+                event["event_lifecycle"].append({
+                    "event_name": event_name,
+                    "state": state,
+                    "track_id": track_id,
+                })
     return event
 
 
