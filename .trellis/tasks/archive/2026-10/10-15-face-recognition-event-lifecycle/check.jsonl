@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/vision-demo-node.md", "reason": "Check demo-only scope and preserve task/topic contracts"}
+{"file": ".trellis/spec/backend/face-tracking.md", "reason": "Check confirmed identity gating and track lifecycle safety"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Review conventions and scoped implementation quality"}

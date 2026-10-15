@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/vision-demo-node.md", "reason": "Standalone demo publisher boundary, ROS interfaces and compatibility rules"}
+{"file": ".trellis/spec/backend/face-tracking.md", "reason": "Identity confirmation, geometric track reuse and face observation contracts"}
