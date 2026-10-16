@@ -10,4 +10,7 @@ if [[ -z "${ROS_DISTRO:-}" ]]; then
   exit 2
 fi
 
+# Load the same patched Fast DDS overlay used by project launch files.
+source "${PROJECT_DIR}/scripts/fastdds_env.sh"
+
 exec uv run --project "${PROJECT_DIR}" python -m demo.vision_demo_node "$@"

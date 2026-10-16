@@ -1,0 +1,31 @@
+{
+  "sampled_at": 1792114562.5350957,
+  "viewer": {
+    "camera": {
+      "topic": "/camera/camera/color/image_raw",
+      "source_width": 640,
+      "source_height": 480,
+      "encoding": "bgr8",
+      "frame_id": "camera_link",
+      "width": 480,
+      "height": 360,
+      "age_ms": 55562756.66388002,
+      "fps": 30.02,
+      "render_fps": 7.5,
+      "render_limit_fps": 8.0
+    },
+    "visual_age_ms": 80.04327400703914,
+    "visual_stamp": 1792064721.6025202
+  },
+  "demo": {
+    "camera": {
+      "available": false,
+      "age_ms": 49842447.2,
+      "stale_after_ms": 500,
+      "frame_id": "camera_link",
+      "topic": "/camera/camera/color/image_raw"
+    },
+    "visual_age_ms": 11.3,
+    "visual_stamp": 1792064721.6025202
+  }
+}

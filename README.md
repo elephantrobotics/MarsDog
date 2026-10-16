@@ -27,7 +27,9 @@ source scripts/fastdds_env.sh
 如果需要替换配置，可设置 `MARSDOG_FASTDDS_PROFILE` 后再 source。配置使用本机 SHM
 传输的 8MiB 单条消息上限；Humble 自带 Fast DDS 2.6.x 的 UDP 上限为 65500 bytes，
 跨主机 UDP 会使用 RTPS 分片。这里只配置传输层，不打开
-`RMW_FASTRTPS_USE_QOS_FROM_XML`。
+`RMW_FASTRTPS_USE_QOS_FROM_XML`。相机大图订阅如遇到 writer 断开后持续 stale，
+请构建并加载 [Fast DDS 2.6.12 缓存回收修复](docs/fastdds-patched-runtime.md)；
+演示启动脚本和本项目 launch 文件会自动选择已安装的修复版库。
 
 `rknn-toolkit-lite2` 只在 Linux AArch64（RK3588）环境安装；其他平台仍可安装、
 运行单元测试和 Mock 联调，但不能执行 RKNN 模型。

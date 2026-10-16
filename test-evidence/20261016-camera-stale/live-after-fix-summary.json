@@ -1,0 +1,13 @@
+{
+  "duration_sec": 120.019,
+  "samples": 121,
+  "all_demo_camera_available": true,
+  "demo_age_ms_max": 40.1,
+  "demo_age_ms_median": 20.6,
+  "viewer_age_ms_max": 38.387792999856174,
+  "viewer_age_ms_median": 19.28315599798225,
+  "viewer_fps_median": 30.0,
+  "source_stamp_advance_sec": 120.00160670280457,
+  "source_stamp_advanced_every_sample": true,
+  "sequence_advance": 1199
+}
